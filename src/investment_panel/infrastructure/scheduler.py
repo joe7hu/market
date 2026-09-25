@@ -39,6 +39,9 @@ CONTINUOUS_SETTINGS_REFRESH_SECONDS = 60
 RETRY_FENCE_REFRESH_SECONDS = 60
 SCHEDULER_CAPACITY = 2
 FAST_DATABASE_JOBS = frozenset({"process_options_paper_orders", "sync_decision_inbox"})
+CRITICAL_CAPACITY_JOBS = FAST_DATABASE_JOBS | {"refresh_paper_quotes"}
+# Dispatch priority is not permission to occupy the paper-management reserve.
+# Market/features/decisions may run for minutes and share the one slow slot.
 PRIORITY_JOBS = FAST_DATABASE_JOBS | {
     "refresh_paper_quotes", "refresh_assessment_inputs", "update_market_data",
     "refresh_symbol_features", "refresh_decision_models",
@@ -76,6 +79,7 @@ TERMINAL_BAR_RETRY_JOBS = {
 _scheduler_semaphore: asyncio.Semaphore | None = None
 _slow_job_semaphore: asyncio.Semaphore | None = None
 _active_jobs: dict[str, float] = {}
+_queued_jobs: dict[str, dict[str, Any]] = {}
 _deferred_jobs = 0
 # Both recovery inputs are point-in-time tapes.  Keep their dispatches on their
 # logical slots instead of letting ordinary completion-time recurrence drift a
@@ -107,6 +111,12 @@ def scheduler_runtime_health() -> dict[str, Any]:
         "job_names": sorted(_active_jobs),
         "oldest_runtime_seconds": round(oldest, 3),
         "deferred_job_count": max(0, _deferred_jobs),
+        "queued_jobs": [
+            {"job_name": job, "waiting_for": value["waiting_for"],
+             "capacity_class": value["capacity_class"], "due_at": value["due_at"],
+             "wait_seconds": round(max(0.0, now - value["queued_at"]), 3)}
+            for job, value in sorted(_queued_jobs.items(), key=lambda item: item[1]["queued_at"])
+        ],
     }
 
 
@@ -573,8 +583,13 @@ async def _dispatch(
     global _deferred_jobs
     # Acquire the slow-workload slot before total capacity. A queued collector
     # must not reserve the last slot while a paper management tick is due.
-    slow = _slow_job_semaphore if job not in PRIORITY_JOBS else None
+    slow = _slow_job_semaphore if job not in CRITICAL_CAPACITY_JOBS else None
     _deferred_jobs += 1
+    _queued_jobs[job] = {
+        "queued_at": time.monotonic(), "due_at": due_at.isoformat() if due_at else None,
+        "capacity_class": "background" if slow is not None else "critical",
+        "waiting_for": "background_capacity" if slow is not None else "total_capacity",
+    }
     slow_acquired = False
     acquired = False
     waiting = True
@@ -582,13 +597,16 @@ async def _dispatch(
         if slow is not None:
             await slow.acquire()
             slow_acquired = True
+            _queued_jobs[job]["waiting_for"] = "total_capacity"
         await semaphore.acquire()
         acquired = True
         _deferred_jobs = max(0, _deferred_jobs - 1)
         waiting = False
+        _queued_jobs.pop(job, None)
         _active_jobs[job] = time.monotonic()
         return await _dispatch_once(job, db_path, config_path, due_at=due_at)
     finally:
+        _queued_jobs.pop(job, None)
         if waiting:
             _deferred_jobs = max(0, _deferred_jobs - 1)
         if acquired:

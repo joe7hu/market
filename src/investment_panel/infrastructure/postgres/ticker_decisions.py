@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from math import isfinite
+import time
 from typing import Any, Iterable, Mapping
 from uuid import UUID
 
@@ -122,7 +123,7 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                '{}'::jsonb AS portfolio_impacts,
                NULL::jsonb AS risk_policy_snapshot,
                decision.opportunity_episode
-        FROM analysis.ticker_decision_read decision
+        FROM analysis.ticker_decision decision
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE decision.status IN ('published', 'superseded')
           AND decision.as_of <= %s
@@ -1324,8 +1325,10 @@ class TickerDecisionRepository:
         now: datetime | None = None,
         limit: int = 2_000,
         symbols: Iterable[str] | None = None,
+        max_work_seconds: float = 120.0,
     ) -> dict[str, int]:
         reference = _utc(now or datetime.now(UTC))
+        deadline = time.monotonic() + max(1.0, float(max_work_seconds))
         selected = (
             None
             if symbols is None
@@ -1339,22 +1342,30 @@ class TickerDecisionRepository:
             filters.append("instrument.symbol = ANY(%s)")
             parameters.append(selected)
         filters.append("decision.as_of <= %s")
+        filters.append("outcome_check.resolved_count < 6")
         parameters.append(reference)
         parameters.append(max(1, min(int(limit), 10_000)))
         with self.runtime.read(JOB_PROFILE) as connection:
             decisions = connection.execute(
                 f"""
                 WITH selected_decisions AS MATERIALIZED (
-                    SELECT decision.id, outcome_check.last_checked_at, decision.as_of
-                    FROM analysis.ticker_decision_read decision
+                    SELECT decision.id, outcome_check.last_checked_at, decision.as_of,
+                           CASE WHEN outcome_check.overdue_observations > 0 THEN 0 ELSE 1 END AS priority
+                    FROM analysis.ticker_decision decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                     LEFT JOIN LATERAL (
-                        SELECT max(outcome.updated_at) AS last_checked_at
+                        SELECT max(outcome.updated_at) AS last_checked_at,
+                               count(*) FILTER (WHERE outcome.state = 'resolved') AS resolved_count,
+                               count(*) FILTER (
+                                   WHERE outcome.state = 'observing'
+                                     AND outcome.updated_at < %s - interval '1 hour'
+                                     AND decision.as_of + make_interval(days => ceil(outcome.horizon_sessions * 7.0 / 5)::int) <= %s
+                               ) AS overdue_observations
                         FROM analysis.ticker_outcome outcome
                         WHERE outcome.ticker_decision_id = decision.id
                     ) outcome_check ON true
                     WHERE {" AND ".join(filters)}
-                    ORDER BY COALESCE(outcome_check.last_checked_at, decision.as_of), decision.as_of, decision.id
+                    ORDER BY priority, COALESCE(outcome_check.last_checked_at, decision.as_of), decision.as_of, decision.id
                     LIMIT %s
                 )
                 SELECT decision.id::text AS decision_id, instrument.id AS instrument_id,
@@ -1401,21 +1412,27 @@ class TickerDecisionRepository:
                        '{{}}'::jsonb AS portfolio_impacts,
                        NULL::jsonb AS risk_policy_snapshot
                 FROM selected_decisions selected
-                JOIN analysis.ticker_decision_read decision ON decision.id = selected.id
+                JOIN analysis.ticker_decision decision ON decision.id = selected.id
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                ORDER BY selected.last_checked_at ASC NULLS FIRST, selected.as_of, selected.id
+                ORDER BY selected.priority, COALESCE(selected.last_checked_at, selected.as_of), selected.as_of, selected.id
                 """,
-                parameters,
+                [reference, reference, *parameters],
             ).fetchall()
         updated = 0
-        resolved = 0
+        resolved = evaluated = 0
         for decision in decisions:
+            if evaluated and time.monotonic() >= deadline:
+                break
             row = dict(decision)
+            # Cache only within this exact decision/cutoff. Never share PIT
+            # observations between revisions or across refresh invocations.
+            row["_evaluation_cache"] = {}
+            plan, plan_blocker = plan_authority(row)
+            selected_expression = dict(row.get("selected_expression") or {})
+            evaluated += 1
             for horizon, sessions in HORIZON_SESSIONS.items():
                 for horizon_sessions in sessions:
                     outcome = self._evaluate(row, horizon, horizon_sessions, reference)
-                    selected_expression = dict(row.get("selected_expression") or {})
-                    plan, plan_blocker = plan_authority(row)
                     outcome["trade_plan_id"] = plan.trade_plan_id if plan else None
                     outcome["plan_authority"] = "canonical" if plan else "legacy_or_invalid"
                     outcome["plan_blocker"] = plan_blocker
@@ -1427,7 +1444,7 @@ class TickerDecisionRepository:
                     )
                     updated += 1
                     resolved += int(outcome["state"] == "resolved")
-        return {"evaluated": len(decisions), "updated": updated, "resolved": resolved}
+        return {"evaluated": evaluated, "updated": updated, "resolved": resolved}
 
     def has_pending_outcome_attributions(
         self,
@@ -1442,7 +1459,7 @@ class TickerDecisionRepository:
                 """
                 SELECT EXISTS (
                     SELECT 1
-                    FROM analysis.ticker_decision_read decision
+                    FROM analysis.ticker_decision decision
                     WHERE decision.status IN ('published', 'superseded')
                       AND decision.as_of <= %s
                       AND jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
@@ -1463,7 +1480,12 @@ class TickerDecisionRepository:
         *,
         now: datetime | None = None,
     ) -> dict[str, Any]:
-        """Publish the complete plan-bound outcome set for the canonical scope."""
+        """Publish complete six-unit plan sets; quarantine incomplete independent plans.
+
+        Completeness is per exact TradePlan identity, never a claim that all
+        historical plans are eligible. Missing/invalid plans remain explicit
+        partial coverage and cannot contribute a unit or promotion sample.
+        """
 
         reference = _utc(now or datetime.now(UTC))
         attributions: list[OutcomeAttribution] = []
@@ -1507,6 +1529,8 @@ class TickerDecisionRepository:
             if paper_blocker:
                 blockers.append(f"{paper_blocker}:{plan.trade_plan_id}")
                 return
+            plan_attributions: list[OutcomeAttribution] = []
+            plan_units: set[str] = set()
             for key in sorted(expected):
                 outcome = by_horizon[key][0]
                 stable_key = outcome_attribution_stable_key(plan.trade_plan_id, key[0], key[1])
@@ -1519,14 +1543,19 @@ class TickerDecisionRepository:
                 if attribution is None:
                     blockers.append(f"outcome_authority_invalid:{stable_key}")
                     continue
-                seen_units.add(stable_key)
-                attributions.append(attribution)
+                plan_units.add(stable_key)
+                plan_attributions.append(attribution)
+            # A failure on the sixth unit must discard the preceding five, not
+            # let a partially built set masquerade as canonical authority.
+            if len(plan_attributions) == len(expected):
+                seen_units.update(plan_units)
+                attributions.extend(plan_attributions)
 
         with self.runtime.read(JOB_PROFILE) as connection:
             legacy_count = connection.execute(
                 """
                 SELECT count(*) AS count
-                FROM analysis.ticker_decision_read decision
+                FROM analysis.ticker_decision decision
                 WHERE decision.status IN ('published', 'superseded')
                   AND decision.as_of <= %s
                   AND jsonb_typeof(decision.input_manifest->'trade_plan') IS DISTINCT FROM 'object'
@@ -1587,11 +1616,17 @@ class TickerDecisionRepository:
         legacy_exclusion_reasons[0:0] = ["trade_plan_missing"] * int(legacy_count or 0)
 
         unique_blockers = list(dict.fromkeys(blockers))
+        # Cross-plan identity ambiguity is global: never choose an arbitrary
+        # first row when two persisted decisions claim the same stable unit.
+        ambiguous = any(reason.startswith("stable_unit_duplicated:") for reason in unique_blockers)
+        can_publish = bool(attributions) and not ambiguous
         result: dict[str, Any] = {
-            "status": "blocked" if unique_blockers or not attributions else "ok",
-            "publication_status": "not_published" if unique_blockers or not attributions else "published",
+            "status": ("partial" if unique_blockers else "ok") if can_publish else "blocked",
+            "publication_status": ("published_partial" if unique_blockers else "published") if can_publish else "not_published",
             "evaluated_count": evaluated,
-            "published_count": len(attributions) if not unique_blockers else 0,
+            "published_count": len(attributions) if can_publish else 0,
+            "published_plan_count": len(attributions) // 6 if can_publish else 0,
+            "excluded_plan_count": evaluated - excluded_legacy - (len(attributions) // 6 if can_publish else 0),
             "excluded_legacy_count": excluded_legacy,
             "excluded_legacy_reasons": _blocker_counts(legacy_exclusion_reasons),
             "blockers": unique_blockers or (["no_plan_bound_attributions"] if not attributions else []),
@@ -1600,7 +1635,7 @@ class TickerDecisionRepository:
             "live_order_submission": False,
             "paper_orders": 0,
         }
-        if unique_blockers or not attributions:
+        if not can_publish:
             return result
 
         models = [item.model_dump(mode="json") for item in attributions]
@@ -1620,6 +1655,10 @@ class TickerDecisionRepository:
                 "scope": "ticker-outcome-attribution",
                 "model": "outcome_attribution",
                 "complete": True,
+                "completeness_unit": "six_horizons_per_trade_plan",
+                "coverage_status": "partial" if unique_blockers else "complete",
+                "excluded_plan_count": result["excluded_plan_count"],
+                "blockers": unique_blockers,
                 "paper_only": True,
                 "live_order_submission": False,
             },
@@ -1628,7 +1667,9 @@ class TickerDecisionRepository:
                 "published_count": len(attributions),
                 "excluded_legacy_count": excluded_legacy,
                 "excluded_legacy_reasons": _blocker_counts(legacy_exclusion_reasons),
-                "blockers": [],
+                "blockers": unique_blockers,
+                "coverage_status": "partial" if unique_blockers else "complete",
+                "excluded_plan_count": result["excluded_plan_count"],
                 "paper_orders": 0,
             },
         )
@@ -1717,84 +1758,94 @@ class TickerDecisionRepository:
         }
 
     def _evaluate(self, decision: dict[str, Any], horizon: Horizon, sessions: int, reference: datetime) -> dict[str, Any]:
-        horizon_end = market_session_bounds(forward_trading_dates(
-            decision["as_of"], count=sessions,
-        )[-1])[1]
+        horizon_dates = forward_trading_dates(decision["as_of"], count=sessions)
+        horizon_end = market_session_bounds(horizon_dates[-1])[1]
+        cache = decision.get("_evaluation_cache")
+        cache_key = ("inputs", decision["as_of"], reference)
         with self.runtime.read(JOB_PROFILE) as connection:
-            entry_quote = connection.execute(
-                """
-                SELECT price, observed_at, available_at
-                FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
-                WHERE observed_at <= %s
-                ORDER BY observed_at DESC, available_at DESC
-                LIMIT 1
-                """,
-                [decision["as_of"], decision["instrument_id"], decision["as_of"]],
-            ).fetchone()
-            entry = connection.execute(
-                """
-                SELECT close, available_at, observed_at
-                FROM raw.confirmed_price_bar_at(%s, ARRAY[%s::bigint])
-                WHERE interval = '1d' AND trading_date <= %s::date
-                ORDER BY trading_date DESC, available_at DESC LIMIT 1
-                """,
-                [decision["as_of"], decision["instrument_id"], decision["as_of"]],
-            ).fetchone()
-            trend_reference = connection.execute(
-                """
-                WITH one_bar_per_day AS (
-                    SELECT DISTINCT ON (trading_date)
-                           close, trading_date, observed_at, available_at, source_id
+            inputs = cache.get(cache_key) if cache is not None else None
+            if inputs is None:
+                entry_quote = connection.execute(
+                    """
+                    SELECT price, observed_at, available_at
+                    FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
+                    WHERE observed_at <= %s
+                    ORDER BY observed_at DESC, available_at DESC
+                    LIMIT 1
+                    """,
+                    [decision["as_of"], decision["instrument_id"], decision["as_of"]],
+                ).fetchone()
+                entry = connection.execute(
+                    """
+                    SELECT close, available_at, observed_at
                     FROM raw.confirmed_price_bar_at(%s, ARRAY[%s::bigint])
                     WHERE interval = '1d' AND trading_date <= %s::date
-                    ORDER BY trading_date, available_at DESC, observed_at DESC, source_id
+                    ORDER BY trading_date DESC, available_at DESC LIMIT 1
+                    """,
+                    [decision["as_of"], decision["instrument_id"], decision["as_of"]],
+                ).fetchone()
+                trend_reference = connection.execute(
+                    """
+                    WITH one_bar_per_day AS (
+                        SELECT DISTINCT ON (trading_date)
+                               close, trading_date, observed_at, available_at, source_id
+                        FROM raw.confirmed_price_bar_at(%s, ARRAY[%s::bigint])
+                        WHERE interval = '1d' AND trading_date <= %s::date
+                        ORDER BY trading_date, available_at DESC, observed_at DESC, source_id
+                    )
+                    SELECT close, trading_date
+                    FROM one_bar_per_day
+                    ORDER BY trading_date DESC
+                    OFFSET 20 LIMIT 1
+                    """,
+                    [decision["as_of"], decision["instrument_id"], decision["as_of"]],
+                ).fetchone()
+                sector = connection.execute(
+                    """
+                    SELECT sector, delisted_at, delisting_price,
+                           delisting_available_at, delisting_source
+                    FROM catalog.instrument
+                    WHERE id = %s
+                    """,
+                    [decision["instrument_id"]],
+                ).fetchone()
+                regime = connection.execute(
+                    """
+                    SELECT feature.trend_state, feature.volatility_state,
+                           feature.as_of, feature.feature_version,
+                           analysis_run.input_cutoff
+                    FROM analysis.symbol_feature feature
+                    JOIN analysis.run analysis_run ON analysis_run.id = feature.run_id
+                    WHERE feature.instrument_id = %s
+                      AND feature.as_of <= %s
+                      AND analysis_run.input_cutoff <= %s
+                      AND feature.trend_state <> 'unavailable'
+                      AND feature.data_quality_status <> 'unavailable'
+                    ORDER BY feature.as_of DESC, analysis_run.input_cutoff DESC, feature.id DESC
+                    LIMIT 1
+                    """,
+                    [decision["instrument_id"], decision["as_of"], decision["as_of"]],
+                ).fetchone()
+                benchmark = connection.execute(
+                    """
+                    SELECT exact_membership
+                    FROM analysis.ticker_benchmark_snapshot
+                    WHERE benchmark_key = 'market-equity-etf' AND available_at <= %s
+                    ORDER BY as_of DESC LIMIT 1
+                    """,
+                    [decision["as_of"]],
+                ).fetchone()
+                marks = confirmed_forward_bars(
+                    connection, decision["instrument_id"], as_of=decision["as_of"],
+                    cutoff=reference, sessions=(252 if cache is not None else sessions),
                 )
-                SELECT close, trading_date
-                FROM one_bar_per_day
-                ORDER BY trading_date DESC
-                OFFSET 20 LIMIT 1
-                """,
-                [decision["as_of"], decision["instrument_id"], decision["as_of"]],
-            ).fetchone()
-            sector = connection.execute(
-                """
-                SELECT sector, delisted_at, delisting_price,
-                       delisting_available_at, delisting_source
-                FROM catalog.instrument
-                WHERE id = %s
-                """,
-                [decision["instrument_id"]],
-            ).fetchone()
-            regime = connection.execute(
-                """
-                SELECT feature.trend_state, feature.volatility_state,
-                       feature.as_of, feature.feature_version,
-                       analysis_run.input_cutoff
-                FROM analysis.symbol_feature feature
-                JOIN analysis.run analysis_run ON analysis_run.id = feature.run_id
-                WHERE feature.instrument_id = %s
-                  AND feature.as_of <= %s
-                  AND analysis_run.input_cutoff <= %s
-                  AND feature.trend_state <> 'unavailable'
-                  AND feature.data_quality_status <> 'unavailable'
-                ORDER BY feature.as_of DESC, analysis_run.input_cutoff DESC, feature.id DESC
-                LIMIT 1
-                """,
-                [decision["instrument_id"], decision["as_of"], decision["as_of"]],
-            ).fetchone()
-            benchmark = connection.execute(
-                """
-                SELECT exact_membership
-                FROM analysis.ticker_benchmark_snapshot
-                WHERE benchmark_key = 'market-equity-etf' AND available_at <= %s
-                ORDER BY as_of DESC LIMIT 1
-                """,
-                [decision["as_of"]],
-            ).fetchone()
-            marks = confirmed_forward_bars(
-                connection, decision["instrument_id"], as_of=decision["as_of"],
-                cutoff=reference, sessions=sessions,
-            )
+                inputs = (entry_quote, entry, trend_reference, sector, regime, benchmark, marks)
+                if cache is not None:
+                    cache[cache_key] = inputs
+            entry_quote, entry, trend_reference, sector, regime, benchmark, path = inputs
+            # Slice by the exact target dates, not row count: a missing day
+            # must not be replaced with a later bar from the shared long path.
+            marks = [bar for bar in path if bar["trading_date"] <= horizon_dates[-1]]
             if sector and sector["delisted_at"] is not None:
                 marks = [row for row in marks if row["trading_date"] <= sector["delisted_at"].date()]
             # Lifecycle events after this target's last session must not

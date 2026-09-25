@@ -580,3 +580,99 @@ def test_active_ticket_refresh_does_not_scan_unrelated_contracts() -> None:
     )
     assert result["errors"] == []
     assert [(row["expiry"], row["strike"]) for row in result["rows"]["NVDA"]] == [("2026-06-26", 300.0)]
+
+
+def test_active_contracts_quote_native_ids_without_chain_rediscovery():
+    class ActiveClient(_FakeRobinhoodClient):
+        def get_option_chains(self, _symbol):
+            raise AssertionError("owned contract identity must not depend on broad chain discovery")
+
+    required = [{"symbol": "NVDA", "contract_id": 101, "expiration": "2027-06-17",
+                 "strike": 205, "option_type": "call", "provider_instrument_id": "owned-native-id",
+                 "deliverable_key": "robinhood-chain:original", "multiplier": 100,
+                 "style": "american", "settlement": "physical", "standard_contract_verified": True}]
+    result = collect_robinhood_option_chains(_ProviderConfig(), ["NVDA"], client=ActiveClient(),
+                                             required_contracts=required, required_only=True)
+    assert result["errors"] == []
+    assert len(result["rows"]["NVDA"]) == 1
+    quote = result["rows"]["NVDA"][0]
+    assert quote["contract_symbol"] == "owned-native-id"
+    assert quote["deliverable_key"] == "robinhood-chain:original"
+    assert quote["standard_contract_verified"] is True
+    assert quote["provider_payload"]["requested_contract_id"] == 101
+    assert result["contract_diagnostics"][0]["stage"] == "normalized"
+
+
+def test_active_contract_quote_omission_is_reported_per_contract_and_not_substituted():
+    class OmissionClient(_FakeRobinhoodClient):
+        def get_option_chains(self, _symbol):
+            raise AssertionError("must use persisted identities")
+
+        def get_option_quotes(self, ids):
+            # Reordered/omitted replies and an unrelated contract are not proof
+            # that the requested catalog contract was captured.
+            return super().get_option_quotes([ids[0], "unrequested-adjusted-id"])
+
+    required = [{"symbol": "NVDA", "contract_id": i, "expiration": "2027-06-17",
+                 "strike": 205 + i, "option_type": "call", "provider_instrument_id": f"native-{i}",
+                 "deliverable_key": "robinhood-chain:original", "multiplier": 100,
+                 "style": "american", "settlement": "physical", "standard_contract_verified": True}
+                for i in (101, 102)]
+    result = collect_robinhood_option_chains(_ProviderConfig(), ["NVDA"], client=OmissionClient(),
+                                             required_contracts=required, required_only=True)
+    assert [row["contract_symbol"] for row in result["rows"]["NVDA"]] == ["native-101"]
+    omitted = next(row for row in result["contract_diagnostics"] if row["contract_id"] == 102)
+    assert omitted["stage"] == "provider_response"
+    assert omitted["reason"] == "provider_omitted_contract"
+    assert any("102" in error and "provider_omitted_contract" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("timestamp", [None, "malformed", "2026-06-12T19:59:59"])
+def test_active_contract_without_aware_provider_time_is_not_fresh_stamped(timestamp):
+    class BadTimeClient(_FakeRobinhoodClient):
+        def get_option_quotes(self, ids):
+            payload = super().get_option_quotes(ids)
+            payload["data"]["results"][0]["quote"]["updated_at"] = timestamp
+            return payload
+
+    required = [{"symbol": "NVDA", "contract_id": 101, "expiration": "2027-06-17",
+                 "strike": 205, "option_type": "call", "provider_instrument_id": "native-101",
+                 "deliverable_key": "robinhood-chain:chain-nvda", "multiplier": 100,
+                 "style": "american", "settlement": "physical", "standard_contract_verified": True}]
+    result = collect_robinhood_option_chains(_ProviderConfig(), ["NVDA"], client=BadTimeClient(),
+                                             required_contracts=required, required_only=True)
+    assert result["rows"] == {}
+    assert result["contract_diagnostics"][0]["reason"] == "provider_quote_time_unconfirmed"
+
+
+def test_required_contract_discovery_never_substitutes_other_deliverable():
+    result = collect_robinhood_option_chains(
+        _ProviderConfig(), ["NVDA"], client=_FakeRobinhoodClient(), required_only=True,
+        required_contracts=[{"symbol": "NVDA", "contract_id": 101, "expiration": "2026-06-26",
+                             "option_type": "call", "strike": 300.0,
+                             "deliverable_key": "robinhood-chain:other-adjusted-chain", "multiplier": 100}],
+    )
+    assert result["rows"] == {}
+    assert any("101" in error and "identity_not_discovered" in error for error in result["errors"])
+
+
+def test_chain_discovery_rejects_repeated_pagination_cursor():
+    class RepeatingClient(_FakeRobinhoodClient):
+        calls = 0
+
+        def get_option_instruments(self, **kwargs):
+            self.calls += 1
+            if self.calls > 3:
+                raise AssertionError("repeated cursors must stop before consuming the provider budget")
+            result = super().get_option_instruments(**kwargs)
+            result["data"]["next"] = "https://provider.test/options?cursor=repeated"
+            return result
+
+    client = RepeatingClient()
+    result = collect_robinhood_option_chains(
+        _ProviderConfig(), ["NVDA"], client=client, required_only=True,
+        required_contracts=[{"symbol": "NVDA", "contract_id": 101, "expiration": "2026-06-26",
+                             "option_type": "call", "strike": 300.0}],
+    )
+    assert any("repeated" in error and "cursor" in error for error in result["errors"])
+    assert client.calls == 2

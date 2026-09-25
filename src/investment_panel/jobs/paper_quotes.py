@@ -57,12 +57,15 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
                 "contracts_selected": len(selected)}
     finally:
         policy.release_provider_lease(lease.id)
-    count = int(persisted.get("contract_count") or 0)
-    return {"status": "partial" if collected.get("errors") or count < len(selected) else "ok",
+    count = (len(persisted["matched_contract_ids"]) if "matched_contract_ids" in persisted
+             else int(persisted.get("contract_count") or 0))
+    errors = list(dict.fromkeys([*(collected.get("errors") or []), *(persisted.get("coverage_errors") or [])]))
+    return {"status": "partial" if errors or count < len(selected) else "ok",
             "paper_only": True, "live_brokerage_submission": False, "source_id": "robinhood",
             "symbols_requested": symbols, "symbols_attempted": collected.get("symbols_attempted") or [],
-            "source_status": source_status, "downstream_status": "ok",
+            "source_status": source_status, "downstream_status": "partial" if persisted.get("coverage_errors") else "ok",
             "contracts_required": len(required),
             "contracts_selected": len(selected), "contracts_captured": count,
             "remaining_contracts": max(0, len(required) - count), "run_id": persisted.get("run_id"),
-            "errors": list(collected.get("errors") or [])[:5]}
+            "contract_diagnostics": persisted.get("contract_diagnostics") or collected.get("contract_diagnostics") or [],
+            "errors": errors[:100]}

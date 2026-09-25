@@ -147,53 +147,73 @@ class AgentRepository:
         return queued
 
     def queue_postmortem(self, decision_id: str | UUID, *, reason: str) -> dict[str, Any]:
-        with self.runtime.transaction() as connection:
-            decision = connection.execute(
-                """
-                SELECT decision.id, decision.decision_key, decision.state, decision.score,
-                       decision.reasons, decision.blockers, instrument.symbol AS ticker,
-                       outcome.maturity_state, outcome.observed_through, outcome.current_return,
-                       outcome.return_1d, outcome.return_5d, outcome.return_20d,
-                       outcome.return_60d, outcome.peak_return, outcome.max_drawdown
-                FROM analysis.decision decision
-                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
-                WHERE decision.id = %s
-                """,
-                [decision_id],
-            ).fetchone()
-            if decision is None:
-                raise ValueError(f"decision not found: {decision_id}")
-            request = {"decision_id": str(decision["id"]), "reason": reason, "decision": dict(decision), "authority": "proposal_only"}
+        from investment_panel.infrastructure.postgres.postmortem_context import (
+            CONTEXT_VERSION, evidence_context, evidence_fingerprint,
+        )
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [f"postmortem:{decision_id}"])
+            cutoff = datetime.now(UTC)
+            context = evidence_context(connection, decision_id, cutoff)
+            fingerprint = evidence_fingerprint(context)
+            existing = connection.execute("""
+                SELECT id, status, request FROM analysis.agent_task
+                WHERE decision_id = %s AND task_kind = 'option_postmortem'
+                  AND (status IN ('queued', 'running') OR (status = 'completed' AND evidence_fingerprint = %s))
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """, [decision_id, fingerprint]).fetchone()
+            if existing:
+                if existing["status"] == "completed":
+                    connection.execute("UPDATE analysis.agent_task SET validation_detail = validation_detail || %s WHERE id = %s",
+                        [Jsonb({"postmortem_context_check_at": cutoff.isoformat()}), existing["id"]])
+                return {**dict(existing["request"]), "request_id": str(existing["id"]), "status": existing["status"], "created": False}
+            request = {"decision_id": str(decision_id), "ticker": context["decision"]["ticker"],
+                       "reason": reason, "decision": context["decision"], "context": context,
+                       "context_version": CONTEXT_VERSION, "evidence_fingerprint": fingerprint,
+                       "authority": "proposal_only"}
             row = connection.execute(
-                "INSERT INTO analysis.agent_task (decision_id, task_kind, status, request) "
-                "VALUES (%s, 'option_postmortem', 'queued', %s) RETURNING id",
-                [decision["id"], Jsonb(_jsonable(request))],
+                "INSERT INTO analysis.agent_task (decision_id, task_kind, status, request, evidence_fingerprint, schema_version) "
+                "VALUES (%s, 'option_postmortem', 'queued', %s, %s, %s) RETURNING id",
+                [decision_id, Jsonb(request), fingerprint, CONTEXT_VERSION],
             ).fetchone()
-        return {"request_id": str(row["id"]), "status": "queued", **request}
+        return {"request_id": str(row["id"]), "status": "queued", "created": True, **request}
 
     def queue_current_postmortems(self, *, limit: int = 4) -> int:
+        from investment_panel.infrastructure.postgres.postmortem_context import CONTEXT_VERSION
+
+        limit = max(0, min(int(limit), 20))
+        if not limit:
+            return 0
         with self.runtime.read(JOB_PROFILE) as connection:
-            rows = connection.execute(
-                """
+            rows = connection.execute("""
                 SELECT outcome.decision_id, outcome.maturity_state
                 FROM analysis.option_outcome outcome
+                LEFT JOIN LATERAL (
+                    SELECT task.status, task.created_at, task.updated_at, task.validation_detail
+                    FROM analysis.agent_task task
+                    WHERE task.decision_id = outcome.decision_id AND task.task_kind = 'option_postmortem'
+                      AND task.schema_version = %s ORDER BY task.created_at DESC, task.id DESC LIMIT 1
+                ) latest ON true
                 WHERE outcome.maturity_state IN ('mature', 'expired')
                   AND NOT EXISTS (
                       SELECT 1 FROM analysis.agent_task task
-                      WHERE task.task_kind = 'option_postmortem'
-                        AND task.request->>'decision_id' = outcome.decision_id::text
-                        AND task.status IN ('queued', 'running', 'completed')
+                      WHERE task.task_kind = 'option_postmortem' AND task.decision_id = outcome.decision_id
+                        AND task.status IN ('queued', 'running')
                   )
-                ORDER BY outcome.updated_at DESC LIMIT %s
-                """,
-                [limit],
-            ).fetchall()
+                  AND (latest.created_at IS NULL
+                       OR (latest.status = 'failed' AND latest.updated_at < now() - interval '1 hour')
+                       OR (latest.status = 'completed' AND greatest(outcome.updated_at,
+                           (SELECT max(paper.updated_at) FROM app.paper_order paper WHERE paper.decision_id = outcome.decision_id),
+                           (SELECT max(journal.created_at) FROM app.trade_journal journal WHERE journal.decision_id = outcome.decision_id))
+                          > coalesce((latest.validation_detail->>'postmortem_context_check_at')::timestamptz, latest.created_at)))
+                ORDER BY latest.created_at NULLS FIRST, outcome.updated_at, outcome.decision_id LIMIT %s
+                """, [CONTEXT_VERSION, limit * 4]).fetchall()
+        queued = 0
         for row in rows:
-            self.queue_postmortem(
-                row["decision_id"], reason=f"terminal outcome: {row['maturity_state']}",
-            )
-        return len(rows)
+            result = self.queue_postmortem(row["decision_id"], reason=f"terminal outcome: {row['maturity_state']}")
+            queued += int(result.get("created", False))
+            if queued >= limit:
+                break
+        return queued
 
     def submit(self, task_kind: str, payload: dict[str, Any]) -> str:
         with self.runtime.transaction() as connection:
@@ -782,8 +802,9 @@ def _task_envelope(task: Any, stored: dict[str, Any]) -> dict[str, Any]:
         "objective": "falsifiable_option_thesis" if str(task["task_kind"]) == "option_thesis" else "proposal_only",
         "ticker": str(stored.get("ticker") or "").upper(),
         "decision_id": str(stored.get("decision_id") or "") or None,
-        "cutoff": None,
-        "evidence_refs": [{"type": "agent_request", "id": str(task["id"])}],
+        "cutoff": (stored.get("context") or {}).get("review_cutoff"),
+        "evidence_refs": [{"type": "agent_request", "id": str(task["id"])},
+                          *(stored.get("context") or {}).get("evidence_refs", [])[:200]],
         "authority": stored.get("authority") or "advisory_only",
     }
 

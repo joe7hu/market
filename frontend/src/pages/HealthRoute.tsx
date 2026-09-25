@@ -113,7 +113,7 @@ export function HealthRoute() {
         </div>
       ) : null}
       <ScopeStatusNotice status={scopeStatus.health} onRetry={() => void reload()} />
-      <details className="rounded-md border border-border p-4" onToggle={(event) => { if (event.currentTarget.open) void loadScope("research-authority").catch(() => undefined); }}><summary className="cursor-pointer font-semibold">Research diagnostics</summary><ScopeStatusNotice status={scopeStatus["research-authority"]} onRetry={() => void loadScope("research-authority", { force: true })} /><ResearchAuthorityTable data={data} /></details>
+      <details className="rounded-md border border-border p-4" onToggle={(event) => { if (event.currentTarget.open) void loadScope("research-authority").catch(() => undefined); }}><summary className="cursor-pointer font-semibold">Research diagnostics</summary><ScopeStatusNotice status={scopeStatus["research-authority"]} onRetry={() => void loadScope("research-authority", { force: true })} /><ResearchAuthorityTable data={data} status={scopeStatus["research-authority"]} /></details>
       <DataFlowDiagram stages={flowStages} />
 
       <DecisionFunnelPanel funnel={decisionFunnel.funnel} jobs={jobs.rows} loading={decisionFunnel.loading} error={decisionFunnel.error} />

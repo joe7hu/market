@@ -65,7 +65,7 @@ def _number(value: Any) -> float | None:
     return number if isfinite(number) else None
 
 
-def _reconciled_exit_pnl(row: dict[str, Any], fills: dict[str, Any] | None) -> float | None:
+def reconciled_exit_pnl(row: dict[str, Any], fills: dict[str, Any] | None) -> float | None:
     """Recheck an unknown exit from the same fill and paid-fee evidence."""
     if not fills or fills["missing_fees"] or fills["invalid_fills"] or fills.get("fill_multipliers_verified") is not True:
         return None
@@ -136,7 +136,7 @@ def shared_sleeve_loss_state(connection: Any, *, now: datetime) -> dict[str, Any
             order_id = row["id"]
             if order_id not in fills_by_order:
                 fills_by_order[order_id] = paper_fill_totals(connection, row, as_of=now)
-            value = _reconciled_exit_pnl(row, fills_by_order[order_id])
+            value = reconciled_exit_pnl(row, fills_by_order[order_id])
             reconciled += int(value is not None)
         if value is None:
             unresolved += 1

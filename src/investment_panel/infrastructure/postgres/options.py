@@ -67,7 +67,9 @@ def active_paper_contracts(config: AppConfig, source_id: str) -> list[dict[str, 
                    GROUP BY symbol
                )
                SELECT instrument.symbol, contract.expiration::text AS expiration,
-                      contract.id AS contract_id, contract.option_type, contract.strike::double precision AS strike
+                      contract.id AS contract_id, contract.option_type, contract.strike::double precision AS strike,
+                      contract.provider_symbols->>%s AS provider_instrument_id, contract.deliverable_key,
+                      contract.multiplier, contract.style, contract.settlement, contract.standard_contract_verified
                FROM active
                JOIN catalog.option_contract contract ON contract.id = active.contract_id
                JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
@@ -83,7 +85,7 @@ def active_paper_contracts(config: AppConfig, source_id: str) -> list[dict[str, 
                         bool_or(latest.observed_at IS NULL) OVER (PARTITION BY instrument.symbol) DESC,
                         min(latest.observed_at) OVER (PARTITION BY instrument.symbol) NULLS FIRST,
                         instrument.symbol, contract.expiration, contract.option_type, contract.strike""",
-            [source_id, source_id, source_id],
+            [source_id, source_id, source_id, source_id],
         ).fetchall()]
 
 
@@ -114,7 +116,13 @@ def persist_collected_option_chains(
             rows=flattened,
             completeness=_completeness(collected),
         )
-        errors = list(collected.get("errors") or [])
+        coverage: dict[str, Any] = {}
+        if "required_contracts" in collected:
+            from investment_panel.infrastructure.postgres.paper_quote_coverage import reconcile_capture
+            coverage = reconcile_capture(runtime, snapshot_id=snapshot["snapshot_id"],
+                                         requested=collected["required_contracts"], received_at=observed_at,
+                                         diagnostics=collected.get("contract_diagnostics") or [])
+        errors = list(dict.fromkeys([*(collected.get("errors") or []), *coverage.get("coverage_errors", [])]))
         run.finish(
             "partial" if errors else "succeeded",
             item_count=len(flattened),
@@ -124,10 +132,11 @@ def persist_collected_option_chains(
                 "quote_count": quote_count,
                 "market_data": collected.get("market_data"),
                 "symbols_requested": list(collected.get("symbols_requested") or (collected.get("rows") or {}).keys()),
-                "errors": list(collected.get("errors") or [])[:25],
+                "errors": errors[:100],
+                **coverage,
             },
         )
-    return {**snapshot, "quote_count": quote_count, "run_id": str(run.id)}
+    return {**snapshot, "quote_count": quote_count, "run_id": str(run.id), **coverage}
 
 
 def register_option_source(

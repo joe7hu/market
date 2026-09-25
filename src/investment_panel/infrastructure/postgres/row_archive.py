@@ -10,6 +10,7 @@ import json
 from typing import Any, Iterable
 
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
+from investment_panel.infrastructure.postgres.row_copy_archive import write_large_row
 
 MAX_PACK_BYTES = 8 * 1024**2
 MAX_PACK_ROWS = 500
@@ -60,13 +61,15 @@ class RowArchive:
 
         for record in records:
             raw = str(record["row_json"])
-            if len(raw.encode("utf-8")) > MAX_PACK_BYTES:
-                raise ValueError("individual source row exceeds the 8 MiB archive budget")
             entry = {"relation": relation, "row_json": raw, "columns": columns,
                      "source_database": dict(identity), "archive_contract": "postgres-row-pack.v1"}
             entry_size = len(json.dumps(entry, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
             if entry_size + 2 > MAX_PACK_BYTES:
-                raise ValueError("individual source row exceeds the 8 MiB archive budget including schema")
+                if pack:
+                    flush()
+                    pack, size = [], 2
+                ids.append(write_large_row(self.service, connection, self.kind, relation, raw, columns, dict(identity)))
+                continue
             if pack and (size + entry_size + 1 > MAX_PACK_BYTES or len(pack) >= MAX_PACK_ROWS):
                 flush()
                 pack, size = [], 2

@@ -475,7 +475,8 @@ def test_outcome_attribution_publication_is_full_and_replayable(
         selected_refresh = repository.refresh_outcomes(
             now=observed + timedelta(days=3), symbols={symbol},
         )
-        assert selected_refresh["evaluated"] == 2
+        # Fully resolved decisions are not eligible for the background queue.
+        assert selected_refresh["evaluated"] == 0
         preserved = AnalysisRepository(runtime).publication_rows(
             "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
         )
@@ -1080,9 +1081,9 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         assert replay["skipped_count"] == 1
         assert outcome_scopes == [["PITX"], ["PITX"]]
         assert result["outcomes"]["evaluated"] == 2
-        assert replay["outcomes"]["evaluated"] == 2
-        assert evaluated.count(("PITX", historical)) == 2
-        assert evaluated.count(("PITX", observed)) == 2
+        assert replay["outcomes"]["evaluated"] == 0
+        assert evaluated.count(("PITX", historical)) == 1
+        assert evaluated.count(("PITX", observed)) == 1
         assert ("OTHER", historical) not in evaluated
         with runtime.read() as connection:
             rank_publication = connection.execute(
@@ -1158,7 +1159,7 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         future_refresh = refresh_outcomes(
             TickerDecisionRepository(runtime), now=observed, symbols=["PITX"],
         )
-        assert future_refresh["evaluated"] == 2
+        assert future_refresh["evaluated"] == 0
         assert ("PITX", future) not in evaluated[before_future_refresh:]
     finally:
         runtime.close()
@@ -1513,5 +1514,65 @@ def test_funded_stock_exit_reduces_original_lot_without_purchase_cash(migrated_p
             assert state['reconciled_exits'] == 2
             assert state['value'] == 0
 
+    finally:
+        runtime.close()
+
+
+def test_outcome_refresh_reads_shared_inputs_and_plan_once_per_decision(migrated_postgres_dsn, monkeypatch):
+    from investment_panel.infrastructure.postgres import ticker_decisions as owner
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        reference = datetime.now(UTC) + timedelta(minutes=1)
+        with runtime.transaction() as connection:
+            connection.execute("INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('CACHEOUT', 'Cache outcome', 'equity')")
+        repository = TickerDecisionRepository(runtime)
+        repository.publish(build_ticker_decision("CACHEOUT", {}, as_of=reference - timedelta(days=40)))
+        original_bars, original_plan = owner.confirmed_forward_bars, owner.plan_authority
+        reads, plans = [], []
+        def bars(*args, **kwargs):
+            reads.append(kwargs["sessions"])
+            return original_bars(*args, **kwargs)
+        def plan(row):
+            plans.append(row["decision_id"])
+            return original_plan(row)
+        monkeypatch.setattr(owner, "confirmed_forward_bars", bars)
+        monkeypatch.setattr(owner, "plan_authority", plan)
+        result = repository.refresh_outcomes(now=reference, limit=1, symbols={"CACHEOUT"})
+        assert result == {"evaluated": 1, "updated": 6, "resolved": 0}
+        assert len(reads) == len(plans) == 1
+    finally:
+        runtime.close()
+
+
+def test_outcome_queue_prioritizes_overdue_observations_and_excludes_completed(migrated_postgres_dsn, monkeypatch):
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        reference = datetime.now(UTC) + timedelta(minutes=1)
+        repository = TickerDecisionRepository(runtime)
+        with runtime.transaction() as connection:
+            for symbol in ("DONEOUT", "DUEOUT", "NEWOUT"):
+                connection.execute("INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity')", [symbol, symbol])
+        ids = {symbol: repository.publish(build_ticker_decision(symbol, {}, as_of=reference - timedelta(days=days)))["ticker_decision_id"]
+               for symbol, days in (("DONEOUT", 90), ("DUEOUT", 45), ("NEWOUT", 60))}
+        with runtime.transaction() as connection:
+            for symbol in ("DONEOUT", "DUEOUT"):
+                for horizon, sessions in (("TACTICAL", 1), ("TACTICAL", 5), ("TACTICAL", 20),
+                                          ("FUNDAMENTAL", 63), ("FUNDAMENTAL", 126), ("FUNDAMENTAL", 252)):
+                    connection.execute("INSERT INTO analysis.ticker_outcome (ticker_decision_id, horizon, horizon_sessions, state, selected_expression, updated_at) VALUES (%s, %s, %s, %s, 'STOCK', %s)",
+                                       [ids[symbol], horizon, sessions, "resolved" if symbol == "DONEOUT" else "observing", reference - timedelta(days=3)])
+        evaluated = []
+        original = repository._evaluate
+        def evaluate(row, horizon, sessions, now):
+            evaluated.append(row["ticker"])
+            return original(row, horizon, sessions, now)
+        monkeypatch.setattr(repository, "_evaluate", evaluate)
+        repository.refresh_outcomes(now=reference, limit=1, symbols=set(ids))
+        assert set(evaluated) == {"DUEOUT"}
+        evaluated.clear()
+        repository.refresh_outcomes(now=reference, limit=1, symbols=set(ids))
+        assert set(evaluated) == {"NEWOUT"}
+        assert "DONEOUT" not in evaluated
     finally:
         runtime.close()
