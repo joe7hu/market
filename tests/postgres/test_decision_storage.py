@@ -351,6 +351,41 @@ def test_publication_archive_preserves_exact_postgres_numeric_text(storage):
     assert any(item["relation"] == "analysis.run" and "9007199254740993.1" in item["row_json"] for item in objects)
 
 
+def test_publication_archive_covers_payload_hash_batch_boundary(storage):
+    reference = datetime.now(UTC)
+    analysis = AnalysisRepository(storage.runtime)
+    old_run = analysis.start_run("storage-test", input_cutoff=reference, code_version="old", inputs={})
+    analysis.finish_run(old_run, "succeeded")
+    rows = [{"stable_key": f"item-{i}", "value": i} for i in range(501)]
+    rows[-1]["blob"] = "x" * (8 * 1024**2)
+    old_id = analysis.publish(old_run, "research", {"brief": rows})
+    new_run = analysis.start_run("storage-test", input_cutoff=reference, code_version="new", inputs={})
+    analysis.finish_run(new_run, "succeeded")
+    new_id = analysis.publish(new_run, "research", {"brief": [rows[0]]})
+    with storage.runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE app.publication SET created_at = %s, published_at = %s WHERE id = %s",
+            [reference - timedelta(days=100), reference - timedelta(days=100), old_id],
+        )
+    result = RetentionRepository(storage.runtime, archive_root=storage.archive_root).prune_publications(now=reference)
+    assert result["publications"] == 1
+    archived = [
+        row for path in storage.archive_root.rglob("*.json.gz")
+        for row in json.loads(gzip.decompress(path.read_bytes()))
+        if row["relation"] == "app.publication_payload"
+    ]
+    assert len({json.loads(row["row_json"])["content_hash"] for row in archived}) == 500
+    with storage.runtime.read() as connection:
+        assert connection.execute("""
+            SELECT count(*) FROM ops.storage_archive_manifest
+            WHERE source_relation = 'app.publication_payload'
+              AND format = 'postgres-copy-text-gzip.v1'
+              AND verification_status = 'verified'
+        """).fetchone()["count"] == 1
+        assert connection.execute("SELECT count(*) FROM app.publication WHERE id = %s", [new_id]).fetchone()["count"] == 1
+        assert connection.execute("SELECT count(*) FROM app.publication_payload").fetchone()["count"] == 1
+
+
 def test_context_backfill_finishes_partially_normalized_decision(storage):
     context, policy = {"facts": ["retained"]}, {"version": "risk.v1"}
     decision_id = _decision(storage.runtime, context=context, policy=policy)

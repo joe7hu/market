@@ -48,6 +48,24 @@ class PublicationArchive:
             RowArchive(self.service, kind="publications").write(connection, relation, records())
         return count
 
+    def bundle_payloads(self, connection: Any, bundle_ids: list[Any]) -> None:
+        # The lateral lookup keeps PostgreSQL on the content-hash index rather
+        # than scanning the entire payload table for a small archived bundle.
+        with connection.cursor(name=f"archive_{uuid4().hex}") as cursor:
+            cursor.itersize = 1
+            cursor.execute("""
+                SELECT to_jsonb(source)::text AS row_json
+                FROM (SELECT DISTINCT content_hash FROM app.publication_bundle_item
+                      WHERE bundle_id = ANY(%s) ORDER BY content_hash) hashes
+                CROSS JOIN LATERAL (
+                    SELECT * FROM app.publication_payload payload
+                    WHERE payload.content_hash = hashes.content_hash OFFSET 0
+                ) source
+                ORDER BY hashes.content_hash
+            """, [bundle_ids])
+            RowArchive(self.service, kind="publications").write(
+                connection, "app.publication_payload", cursor)
+
     def publications(self, connection: Any, candidates: list[Any]) -> list[Any]:
         """Lock publisher scopes, recheck status, and archive exact candidates."""
         scopes = connection.execute(
@@ -73,7 +91,5 @@ class PublicationArchive:
         self.rows(connection, "app.publication_bundle", "source.id = ANY(%s)", [bundle_ids])
         self.rows(connection, "app.publication_bundle_item", "source.bundle_id = ANY(%s)", [bundle_ids])
         self.rows(connection, "app.publication_item", "source.publication_id = ANY(%s)", [ids])
-        self.rows(connection, "app.publication_payload", """source.content_hash IN (
-            SELECT item.content_hash FROM app.publication_bundle_item item WHERE item.bundle_id = ANY(%s)
-        )""", [bundle_ids])
+        self.bundle_payloads(connection, bundle_ids)
         return ids

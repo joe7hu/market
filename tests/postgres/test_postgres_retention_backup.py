@@ -203,9 +203,9 @@ def test_publication_retention_is_bounded_dry_run_and_repeatable(postgres_dsn: s
     finally:
         runtime.close()
 
-    assert scheduled["publications"] == 1
-    assert first["publications"] == 3
-    assert second["publications"] == 3
+    assert scheduled["publications"] == 7
+    assert first["publications"] == 0
+    assert second["publications"] == 0
     assert third["publications"] == 0
     assert fourth["publications"] == 0
     with closing(psycopg.connect(postgres_dsn)) as connection:

@@ -263,7 +263,7 @@ def test_scheduler_has_bounded_regular_storage_job(monkeypatch):
     from tests.conftest import typed_config
     monkeypatch.delenv("MARKET_STORAGE_RETENTION_SECONDS", raising=False)
     assert scheduler_intervals(typed_config())["postgres_retention"] == 3600
-    assert job_definition("postgres_retention").timeout_seconds == 180
+    assert job_definition("postgres_retention").timeout_seconds == 600
     monkeypatch.setenv("MARKET_STORAGE_RETENTION_SECONDS", "0")
     assert "postgres_retention" not in scheduler_intervals(typed_config())
 

@@ -6,12 +6,13 @@ from datetime import UTC, datetime, timedelta
 import os
 from pathlib import Path
 import re
+from time import monotonic
 from typing import Any
 
 import psycopg
 
 from investment_panel.domain.decision import is_us_market_day
-from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE, RuntimeProfile
 from investment_panel.infrastructure.postgres.publication_archive import PublicationArchive
 from investment_panel.infrastructure.postgres.hot_retention import HotRetention, MAINTENANCE_PROFILE
 from investment_panel.infrastructure.postgres.row_archive import MAX_PACK_BYTES, RowArchive
@@ -22,6 +23,7 @@ ROLLING_PUBLICATION_SCOPES = ("today", "options-radar", "options-decision-system
 MARKET_PUBLICATION_SUPERSEDED_LIMIT = 48
 ROLLING_PUBLICATION_TRADING_DAYS = 7
 PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE = 500
+SCHEDULED_PUBLICATION_PROFILE = RuntimeProfile(statement_timeout_ms=90_000)
 
 
 class RetentionRepository:
@@ -47,7 +49,7 @@ class RetentionRepository:
     def prune(
         self, *, now: datetime | None = None, option_days: int = 7,
         analysis_days: int = 30, publication_days: int = 7, job_days: int = 30,
-        publication_batch_size: int = 1, dry_run: bool = False,
+        publication_batch_size: int = 40, dry_run: bool = False,
         vacuum_analyze: bool = False,
     ) -> dict[str, int]:
         """Small independently committed batches; no derived-history CASCADE.
@@ -58,10 +60,32 @@ class RetentionRepository:
         reference = now or datetime.now(UTC)
         if reference.tzinfo is None or min(option_days, publication_days, job_days) < 1 or analysis_days < 30:
             raise ValueError("retention requires an aware time, positive windows, and an analysis window of at least 30 days")
-        counts = self.prune_publications(now=reference, batch_size=publication_batch_size,
-            dry_run=dry_run, vacuum_analyze=vacuum_analyze, publication_days=publication_days)
+        if not 1 <= publication_batch_size <= 100:
+            raise ValueError("publication batch size must be 1..100")
+        with self.runtime.read(SCHEDULED_PUBLICATION_PROFILE) as connection:
+            candidates = _publication_candidates(
+                connection, standard_cutoff=reference - timedelta(days=publication_days),
+                rolling_cutoff=_trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS),
+                limit=None if dry_run else publication_batch_size,
+            )
         if dry_run:
-            return counts
+            return {"publications": len(candidates), "publication_dry_run": len(candidates)}
+        counts: dict[str, int] = {"publications": 0}
+        started = monotonic()
+        for candidate in candidates:
+            result = self.prune_publications(
+                now=reference, candidate_ids=[candidate], cleanup_orphans=False,
+                vacuum_analyze=False, publication_days=publication_days,
+            )
+            for name, count in result.items():
+                counts[name] = counts.get(name, 0) + count
+            if monotonic() - started >= 120:
+                break
+        orphan_result = self.prune_publications(now=reference, candidate_ids=[])
+        for name, count in orphan_result.items():
+            counts[name] = counts.get(name, 0) + count
+        if vacuum_analyze and counts["publications"]:
+            counts["publication_vacuum_tables"] = self.vacuum_analyze_publications()
         counts.update({"analysis_runs": 0, "option_quotes": 0, "option_snapshots": 0})
         if self.archive is not None:
             hot = HotRetention(self.archive.service).run(now=reference, execute=True,
@@ -119,6 +143,8 @@ class RetentionRepository:
         publication_days: int = 7,
         dry_run: bool = False,
         vacuum_analyze: bool = False,
+        candidate_ids: list[Any] | None = None,
+        cleanup_orphans: bool = True,
     ) -> dict[str, int]:
         """Prune only superseded publications in a small, restart-safe batch.
 
@@ -133,12 +159,10 @@ class RetentionRepository:
         if not 1 <= batch_size <= 100 or publication_days < 1:
             raise ValueError("publication batch size must be 1..100 and days positive")
         rolling_cutoff = _trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS)
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            candidates = _publication_candidates(
-                connection,
-                standard_cutoff=reference - timedelta(days=publication_days),
-                rolling_cutoff=rolling_cutoff,
-                limit=None if dry_run else batch_size,
+        with self.runtime.transaction(SCHEDULED_PUBLICATION_PROFILE if candidate_ids is not None else JOB_PROFILE) as connection:
+            candidates = candidate_ids if candidate_ids is not None else _publication_candidates(
+                connection, standard_cutoff=reference - timedelta(days=publication_days),
+                rolling_cutoff=rolling_cutoff, limit=None if dry_run else batch_size,
             )
             count = len(candidates)
             compact_counts = {}
@@ -150,7 +174,7 @@ class RetentionRepository:
                     candidates = self.archive.publications(connection, candidates)
                     count = len(candidates)
                     compact_counts = _delete_publications_and_orphaned_content(connection, candidates)
-            if not dry_run:
+            if not dry_run and cleanup_orphans:
                 orphan_payloads = _delete_orphaned_payload_batch(connection, self.archive)
                 if orphan_payloads:
                     compact_counts["publication_payloads"] = compact_counts.get("publication_payloads", 0) + orphan_payloads

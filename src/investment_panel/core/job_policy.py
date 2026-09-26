@@ -105,7 +105,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("update_event_calendar", freshness_seconds=86400),
         _job("update_disclosures", freshness_seconds=86400),
         _job("update_arco_data", freshness_seconds=14400),
-        _job("postgres_retention", timeout_seconds=180, initial_delay="one_interval"),
+        _job("postgres_retention", timeout_seconds=600, initial_delay="one_interval"),
         _job("snapshot_database"),
     )
 }
