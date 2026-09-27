@@ -61,7 +61,8 @@ def upgrade() -> None:
     """)
     projected = " UNION ALL ".join(
         "SELECT candidate.bundle_id, '" + model + "'::text AS model_name, "
-        "candidate.contract_id AS stable_key, candidate.first_rank AS rank, "
+        "candidate.contract_id AS stable_key, "
+        "dense_rank() OVER (PARTITION BY candidate.bundle_id ORDER BY candidate.first_rank)::integer AS rank, "
         "NULL::bigint AS instrument_id, NULL::character(64) AS content_hash, "
         "NULL::uuid AS canonical_publication_id, NULL::text AS decision_payload_hash, "
         "jsonb_build_object(" + ", ".join(

@@ -475,15 +475,7 @@ class TickerDecisionRepository:
                 LIMIT 1 FOR UPDATE
             """, [instrument["id"]]).fetchone()
             if prior is not None and decision.as_of < prior["as_of"]:
-                historical = connection.execute("""
-                    SELECT id, decision_revision FROM analysis.ticker_decision
-                    WHERE instrument_id = %s AND as_of = %s AND semantic_fingerprint = %s
-                    ORDER BY published_at DESC NULLS LAST, id DESC LIMIT 1
-                """, [instrument["id"], decision.as_of, fingerprint]).fetchone()
-                if historical is not None:
-                    _record_decision_checkpoint(connection, historical["id"], decision)
-                    return {"status": "unchanged", "ticker_decision_id": str(historical["id"]),
-                            "decision_revision": historical["decision_revision"]}
+                raise ValueError("backdated evaluation cannot replace current ranking authority")
             if prior is not None and decision.as_of >= prior["as_of"]:
                 prior_fingerprint = prior["semantic_fingerprint"]
                 prior_decision = None

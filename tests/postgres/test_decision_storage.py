@@ -237,6 +237,29 @@ def test_malformed_prior_decision_is_replaced_instead_of_reused(storage):
         assert connection.execute("SELECT status FROM analysis.ticker_decision WHERE id = %s", [first["ticker_decision_id"]]).fetchone()["status"] == "superseded"
 
 
+def test_backdated_retry_cannot_reuse_superseded_decision(storage):
+    with storage.runtime.transaction() as connection:
+        reconcile_instrument(connection, "BACKDATE")
+    repository = TickerDecisionRepository(storage.runtime)
+    cutoff = datetime(2026, 9, 25, 14, tzinfo=UTC)
+    old = build_ticker_decision("BACKDATE", {}, as_of=cutoff)
+    old_id = repository.publish(old)["ticker_decision_id"]
+    current_id = repository.publish(build_ticker_decision(
+        "BACKDATE", {}, as_of=cutoff + timedelta(minutes=1)
+    ))["ticker_decision_id"]
+    assert old_id != current_id
+    with pytest.raises(ValueError, match="backdated evaluation"):
+        repository.publish(old, reuse_only=True)
+    with pytest.raises(ValueError, match="backdated evaluation"):
+        repository.publish(old)
+    assert repository.latest("BACKDATE").as_of == cutoff + timedelta(minutes=1)
+    with storage.runtime.read() as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM analysis.ticker_decision WHERE instrument_id = "
+            "(SELECT id FROM catalog.instrument WHERE symbol = 'BACKDATE')"
+        ).fetchone()["count"] == 2
+
+
 def test_evidence_batch_budget_includes_expression_bytes(storage, monkeypatch):
     decision_id = _decision(storage.runtime)
     with storage.runtime.transaction() as connection:

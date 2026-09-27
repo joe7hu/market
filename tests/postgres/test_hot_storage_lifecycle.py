@@ -273,6 +273,44 @@ def test_option_snapshot_and_features_are_read_projections_of_candidate(storage)
                 WHERE id = (SELECT bundle_id FROM app.publication WHERE id = %s)""", [second_id])
 
 
+def test_projected_option_ranks_follow_distinct_contract_order(storage):
+    snapshot_keys = ("snapshot_time", "ticker", "underlying_price", "expiration", "strike",
+                     "option_type", "bid", "ask", "mid", "volume", "open_interest", "iv",
+                     "delta", "dte", "spread_pct", "data_source", "contract_id", "raw")
+    feature_keys = ("snapshot_time", "contract_id", "ticker", "required_2x_price",
+                    "required_5x_price", "required_10x_price", "required_move_pct",
+                    "liquidity_score", "convexity_score", "raw")
+    base = {key: None for key in (*snapshot_keys, *feature_keys)}
+    candidates = [
+        {**base, "candidate_event_id": str(uuid4()), "stable_key": str(uuid4()),
+         "contract_id": contract, "mid": mid}
+        for contract, mid in (("A", 1), ("A", 2), ("B", 3))
+    ]
+    expected = [candidates[1], candidates[2]]
+    analysis = AnalysisRepository(storage.runtime)
+    run_id = analysis.start_run("options-radar", input_cutoff=datetime.now(UTC),
+                                code_version="duplicate-contract-rank", inputs={"case": str(uuid4())})
+    publication_id = analysis.publish(run_id, "options-radar", {
+        "candidate_event": candidates,
+        "option_snapshot": [{key: candidate[key] for key in snapshot_keys} for candidate in expected],
+        "option_features": [{key: candidate[key] for key in feature_keys} for candidate in expected],
+    })
+    with storage.runtime.read() as connection:
+        rows = connection.execute("""SELECT model_name, stable_key, rank, payload
+            FROM app.publication_content_item WHERE publication_id = %s
+              AND model_name IN ('option_snapshot', 'option_features')
+            ORDER BY model_name, rank""", [publication_id]).fetchall()
+        current = connection.execute("""SELECT model_name, stable_key, rank, payload
+            FROM app.current_publication_item_read WHERE publication_id = %s
+              AND model_name IN ('option_snapshot', 'option_features')
+            ORDER BY model_name, rank""", [publication_id]).fetchall()
+    assert rows == current
+    for model_name in ("option_snapshot", "option_features"):
+        assert [(row["stable_key"], row["rank"]) for row in rows if row["model_name"] == model_name] == [
+            ("A", 1), ("B", 2)
+        ]
+
+
 def test_input_normalization_lossless_precision_sharing_and_restart(storage):
     # Pass PostgreSQL JSON text directly: Python float must never round this.
     raw = '{"inputs":{"fundamentals":[{"raw":"' + "中文" * 1500 + '","exact":0.12345678901234567890123456789,"revision":null}],"quote":[1,2,null]},"trade_plan":{"id":"keep"},"input_hash":"original"}'
