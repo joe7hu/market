@@ -299,6 +299,12 @@ def _publication_candidates(
               SELECT 1 FROM app.publication_bundle_item item
               WHERE item.canonical_publication_id = ranked.id
           )
+          AND NOT EXISTS (
+              SELECT 1 FROM analysis.shadow_trade shadow
+              WHERE shadow.metrics->>'publication_id' = ranked.id::text
+                AND shadow.status NOT IN ('closed', 'unfilled', 'unmeasurable',
+                                          'rejected', 'expired')
+          )
           {selection}
         ORDER BY generation_at, id
         {suffix}

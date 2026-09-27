@@ -32,6 +32,40 @@ QUOTE_PIN = """
             WHERE r.capture_generation_id = q.capture_generation_id AND r.contract_id = q.contract_id
               AND r.classification IN ('historical_static_arbitrage_candidate', 'verified_static_arbitrage_candidate'))
 """
+ARCHIVED_ENVELOPE_READY = """
+    EXISTS (SELECT 1 FROM analysis.option_decision d
+            JOIN ops.storage_archive_manifest manifest
+              ON manifest.id = d.evidence_archive_manifest_id
+            WHERE d.snapshot_id = q.snapshot_id AND d.contract_id = q.contract_id
+              AND d.quote_observed_at = q.observed_at
+              AND d.evidence_state = 'archived'
+              AND manifest.verification_status = 'verified')
+    AND NOT EXISTS (SELECT 1 FROM analysis.option_decision d
+                    WHERE d.snapshot_id = q.snapshot_id AND d.contract_id = q.contract_id
+                      AND d.quote_observed_at = q.observed_at AND d.evidence_state = 'local')
+    AND NOT EXISTS (SELECT 1 FROM analysis.option_decision d
+                    WHERE d.snapshot_id = q.snapshot_id AND d.quote_observed_at = q.observed_at
+                      AND d.evidence_state = 'local'
+                      AND EXISTS (SELECT 1 FROM jsonb_array_elements(
+                        COALESCE(d.synthetic_legs, '[]'::jsonb)) leg
+                        WHERE leg->>'contract_id' = q.contract_id::text))
+    AND NOT EXISTS (SELECT 1 FROM analysis.option_relative_value r
+                    WHERE r.capture_generation_id = q.capture_generation_id
+                      AND r.contract_id = q.contract_id
+                      AND r.classification IN
+                        ('historical_static_arbitrage_candidate',
+                         'verified_static_arbitrage_candidate'))
+    AND NOT EXISTS (SELECT 1 FROM analysis.option_feature f
+                    WHERE f.snapshot_id = q.snapshot_id AND f.contract_id = q.contract_id
+                      AND f.quote_observed_at = q.observed_at
+                      AND NOT EXISTS (
+                        SELECT 1 FROM analysis.decision decision
+                        JOIN analysis.option_decision d ON d.decision_id = decision.id
+                        WHERE decision.run_id = f.run_id AND d.snapshot_id = f.snapshot_id
+                          AND d.contract_id = f.contract_id
+                          AND d.quote_observed_at = f.quote_observed_at
+                          AND d.evidence_state = 'archived'))
+"""
 RV_PIN = """
     r.classification IN ('historical_static_arbitrage_candidate', 'verified_static_arbitrage_candidate')
     OR EXISTS (SELECT 1 FROM analysis.option_decision d WHERE d.relative_value_id = r.id)
@@ -149,6 +183,7 @@ class HotRetention:
         last_at = datetime.fromisoformat(cursor["observed_at"]) if same and cursor.get("observed_at") else datetime.min.replace(tzinfo=UTC)
         candidates = connection.execute(f"""
             SELECT q.contract_id, q.observed_at, q.capture_generation_id, ({QUOTE_PIN}) AS pinned,
+                   ({ARCHIVED_ENVELOPE_READY}) AS archived_envelope_ready,
                    octet_length(to_jsonb(q)::text) AS bytes,
                    q.provider_payload <> '{{}}'::jsonb AS has_payload
             FROM raw.option_quote q WHERE q.snapshot_id = %s
@@ -169,7 +204,9 @@ class HotRetention:
         horizon = 730 if snapshot["collection_profile"] == "history_full" else 365 if snapshot["collection_profile"] == "event_strip" else days
         next_cursor = end_cursor
         for row in candidates:
-            eligible = not row["pinned"] and (row["observed_at"] < now - timedelta(days=horizon) or row["has_payload"])
+            delete_row = not row["pinned"] and row["observed_at"] < now - timedelta(days=horizon)
+            trim_envelope = row["has_payload"] and (not row["pinned"] or row["archived_envelope_ready"])
+            eligible = delete_row or trim_envelope
             if eligible and budget + int(row["bytes"]) > MAX_PACK_BYTES // 2:
                 if not keys:
                     raise ValueError("individual quote exceeds the bounded archive budget")
@@ -180,7 +217,7 @@ class HotRetention:
                 continue
             keys.append((row["contract_id"], row["observed_at"]))
             budget += int(row["bytes"])
-            (delete_keys if row["observed_at"] < now - timedelta(days=horizon) else trim_keys).append((row["contract_id"], row["observed_at"]))
+            (delete_keys if delete_row else trim_keys).append((row["contract_id"], row["observed_at"]))
         if keys:
             records = connection.execute("""SELECT to_jsonb(q)::text AS row_json FROM raw.option_quote q
                 WHERE snapshot_id = %s AND (contract_id, observed_at) IN (SELECT * FROM unnest(%s::bigint[], %s::timestamptz[])) ORDER BY contract_id, observed_at""",
@@ -196,7 +233,7 @@ class HotRetention:
                 counts["option_provider_payloads"] = connection.execute(f"""UPDATE raw.option_quote q
                     SET provider_payload = '{{}}'::jsonb
                     WHERE snapshot_id = %s AND (contract_id, observed_at) IN (SELECT * FROM unnest(%s::bigint[], %s::timestamptz[]))
-                      AND NOT ({QUOTE_PIN})""", [sid, [key[0] for key in trim_keys], [key[1] for key in trim_keys]]).rowcount
+                      AND (NOT ({QUOTE_PIN}) OR ({ARCHIVED_ENVELOPE_READY}))""", [sid, [key[0] for key in trim_keys], [key[1] for key in trim_keys]]).rowcount
         return counts, next_cursor, False
 
     def _relative_values(self, connection: Any, cursor: dict[str, Any], now: datetime, limit: int, days: int):

@@ -258,6 +258,48 @@ def test_ranking_publication_retention_waits_for_backfill_and_keeps_references(p
         runtime.close()
 
 
+def test_old_option_publication_stays_local_while_shadow_outcome_is_open(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    reference = datetime(2026, 9, 27, 14, tzinfo=UTC)
+    try:
+        with runtime.transaction() as connection:
+            _insert_publication(connection, scope="options-radar", status="superseded",
+                                at=reference - timedelta(days=60), sequence=313)
+            publication = connection.execute("SELECT id, analysis_run_id FROM app.publication").fetchone()
+            instrument_id = reconcile_instrument(connection, "PINSHADOW")
+            decision_id = connection.execute("""INSERT INTO analysis.decision
+                (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+                VALUES (%s, 'pin', 'option', %s, %s, 'WATCH', %s) RETURNING id""",
+                [publication["analysis_run_id"], instrument_id, reference - timedelta(days=60), "b" * 64]).fetchone()["id"]
+            shadow_id = connection.execute("""INSERT INTO analysis.shadow_trade
+                (decision_id, status, source_kind, metrics)
+                VALUES (%s, 'pending', 'options_paper_experiment', %s)
+                RETURNING id""", [decision_id, Jsonb({"publication_id": str(publication["id"]),
+                                                          "ticket": {"entry": 1}})]).fetchone()["id"]
+        retention = RetentionRepository(runtime)
+        assert retention.prune_publications(now=reference, candidate_ids=[publication["id"]],
+                                            dry_run=True)["publications"] == 0
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.shadow_trade SET status = 'closed' WHERE id = %s", [shadow_id])
+        assert retention.prune_publications(now=reference, candidate_ids=[publication["id"]],
+                                            dry_run=True)["publications"] == 1
+        assert retention.prune_publications(now=reference, candidate_ids=[publication["id"]])["publications"] == 1
+        with pytest.raises(psycopg.Error, match="active shadow publication is unavailable"):
+            with runtime.transaction() as connection:
+                late = connection.execute("""INSERT INTO analysis.decision
+                    (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+                    VALUES (%s, 'late', 'option', %s, %s, 'WATCH', %s) RETURNING id""",
+                    [publication["analysis_run_id"], instrument_id, reference, "c" * 64]).fetchone()["id"]
+                connection.execute("""INSERT INTO analysis.shadow_trade
+                    (decision_id, status, source_kind, metrics)
+                    VALUES (%s, 'pending', 'options_paper_experiment', %s)""",
+                    [late, Jsonb({"publication_id": str(publication["id"])})])
+    finally:
+        runtime.close()
+
+
 def test_explicit_publication_prune_keeps_current_generation(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)

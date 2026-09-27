@@ -539,7 +539,7 @@ def test_current_funnel_publication_query_projects_only_required_fields() -> Non
     assert captured["profile"] is API_PROFILE
     assert len(captured["queries"]) == 2
     assert "SELECT EXISTS" in str(captured["queries"][0])
-    assert "payload.payload->>'availability_status'" in str(captured["queries"][1])
+    assert "item.payload->>'availability_status'" in str(captured["queries"][1])
     assert "jsonb_to_record" not in str(captured["queries"][1])
     assert "UNION" not in str(captured["queries"][1])
     assert alpha_rows[0]["ticker"] == rank_rows[0]["ticker"] == plan_rows[0]["ticker"] == "AAA"

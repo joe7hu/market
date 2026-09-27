@@ -29,7 +29,7 @@ def published_tables(
             WITH compact_latest AS MATERIALIZED (
                 SELECT DISTINCT ON (item.model_name)
                        item.model_name, item.publication_id, publication.published_at
-                FROM app.current_publication_item item
+                FROM app.current_publication_item_read item
                 JOIN app.publication publication ON publication.id = item.publication_id
                 WHERE item.model_name = ANY(%s) AND publication.status = 'published'
                 ORDER BY item.model_name, publication.published_at DESC NULLS LAST, item.publication_id DESC

@@ -124,6 +124,84 @@ def upgrade() -> None:
         GRANT SELECT ON app.option_publication_projection TO market_app;
     """)
     op.execute("""
+        CREATE FUNCTION app.prevent_inline_option_projection_item()
+        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+        BEGIN
+          IF NEW.model_name IN ('option_snapshot', 'option_features')
+             AND EXISTS (SELECT 1 FROM app.publication_bundle bundle
+                         WHERE bundle.id = NEW.bundle_id
+                           AND bundle.projection_version = 'option-subsets-v1') THEN
+            RAISE EXCEPTION 'projected option model cannot be stored inline';
+          END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER prevent_inline_option_projection_item
+          BEFORE INSERT OR UPDATE ON app.publication_bundle_item
+          FOR EACH ROW EXECUTE FUNCTION app.prevent_inline_option_projection_item();
+        CREATE FUNCTION app.prevent_option_projection_on_inline_bundle()
+        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+        BEGIN
+          IF NEW.projection_version = 'option-subsets-v1'
+             AND EXISTS (SELECT 1 FROM app.publication_bundle_item item
+                         WHERE item.bundle_id = NEW.id
+                           AND item.model_name IN ('option_snapshot', 'option_features')) THEN
+            RAISE EXCEPTION 'projected option bundle has inline model';
+          END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER prevent_option_projection_on_inline_bundle
+          BEFORE INSERT OR UPDATE OF projection_version ON app.publication_bundle
+          FOR EACH ROW EXECUTE FUNCTION app.prevent_option_projection_on_inline_bundle();
+    """)
+    op.execute("""
+        CREATE FUNCTION analysis.require_active_shadow_publication()
+        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+        DECLARE publication_ref text;
+        BEGIN
+          IF NEW.source_kind <> 'options_paper_experiment'
+             OR NEW.status IN ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired')
+          THEN RETURN NEW; END IF;
+          publication_ref := NEW.metrics->>'publication_id';
+          IF publication_ref IS NULL THEN RETURN NEW; END IF;
+          IF TG_OP = 'UPDATE' AND publication_ref IS NOT DISTINCT FROM
+             OLD.metrics->>'publication_id' THEN RETURN NEW; END IF;
+          IF publication_ref !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          THEN RAISE EXCEPTION 'active shadow publication is unavailable'; END IF;
+          PERFORM 1 FROM app.publication publication
+          WHERE publication.id = publication_ref::uuid FOR KEY SHARE;
+          IF NOT FOUND THEN RAISE EXCEPTION 'active shadow publication is unavailable'; END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER require_active_shadow_publication
+          BEFORE INSERT OR UPDATE OF metrics ON analysis.shadow_trade
+          FOR EACH ROW EXECUTE FUNCTION analysis.require_active_shadow_publication();
+    """)
+    op.execute("""
+        CREATE OR REPLACE FUNCTION analysis.require_local_option_evidence()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE state text;
+        BEGIN
+          IF NEW.decision_id IS NULL THEN RETURN NEW; END IF;
+          IF TG_TABLE_NAME = 'paper_order' AND NEW.status IN
+             ('closed', 'cancelled', 'rejected', 'exited', 'invalidated') THEN RETURN NEW; END IF;
+          IF TG_TABLE_NAME = 'agent_task' AND NEW.status IN
+             ('succeeded', 'completed', 'failed', 'cancelled') THEN RETURN NEW; END IF;
+          IF TG_TABLE_NAME = 'shadow_trade' THEN
+            IF NEW.status IN ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired')
+            THEN RETURN NEW; END IF;
+            -- An existing shadow retains its typed plan and quote after the
+            -- bulky scan detail is archived. New shadows still require local evidence.
+            IF TG_OP = 'UPDATE' AND NEW.decision_id = OLD.decision_id THEN RETURN NEW; END IF;
+          END IF;
+          SELECT evidence_state INTO state FROM analysis.option_decision
+            WHERE decision_id = NEW.decision_id FOR KEY SHARE;
+          IF state IS NOT NULL AND state <> 'local' THEN
+            RAISE EXCEPTION 'active option consumer requires local evidence';
+          END IF;
+          RETURN NEW;
+        END $$;
+    """)
+    op.execute("""
         CREATE OR REPLACE FUNCTION analysis.gc_archived_decision_payloads(p_hashes text[])
         RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
         DECLARE removed integer := 0;
@@ -253,6 +331,8 @@ def downgrade() -> None:
             RAISE EXCEPTION 'option projection hash conflict';
           END IF;
         END $$;
+        UPDATE app.publication_bundle SET projection_version = NULL
+          WHERE id IN (SELECT DISTINCT bundle_id FROM option_projection_restore);
         INSERT INTO app.publication_payload(content_hash, payload)
           SELECT DISTINCT ON (hash) hash, payload FROM option_projection_restore
           ORDER BY hash ON CONFLICT (content_hash) DO NOTHING;
@@ -279,9 +359,37 @@ def downgrade() -> None:
            AND current_item.model_name = 'candidate_event';
         UPDATE app.publication_bundle bundle SET item_count = (
           SELECT count(*) FROM app.publication_bundle_item item WHERE item.bundle_id = bundle.id)
-        WHERE bundle.projection_version = 'option-subsets-v1';
+        WHERE bundle.id IN (SELECT DISTINCT bundle_id FROM option_projection_restore);
     """)
     op.execute("DROP FUNCTION app.rehome_ranking_publication_payload(uuid, text, text)")
+    op.execute("""
+        DROP TRIGGER require_active_shadow_publication ON analysis.shadow_trade;
+        DROP FUNCTION analysis.require_active_shadow_publication();
+        CREATE OR REPLACE FUNCTION analysis.require_local_option_evidence()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE state text;
+        BEGIN
+          IF NEW.decision_id IS NULL THEN RETURN NEW; END IF;
+          IF TG_TABLE_NAME = 'paper_order' AND NEW.status IN
+             ('closed', 'cancelled', 'rejected', 'exited', 'invalidated') THEN RETURN NEW; END IF;
+          IF TG_TABLE_NAME = 'agent_task' AND NEW.status IN
+             ('succeeded', 'completed', 'failed', 'cancelled') THEN RETURN NEW; END IF;
+          IF TG_TABLE_NAME = 'shadow_trade' AND NEW.status IN
+             ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired') THEN RETURN NEW; END IF;
+          SELECT evidence_state INTO state FROM analysis.option_decision
+            WHERE decision_id = NEW.decision_id FOR KEY SHARE;
+          IF state IS NOT NULL AND state <> 'local' THEN
+            RAISE EXCEPTION 'active option consumer requires local evidence';
+          END IF;
+          RETURN NEW;
+        END $$;
+    """)
+    op.execute("""
+        DROP TRIGGER prevent_inline_option_projection_item ON app.publication_bundle_item;
+        DROP TRIGGER prevent_option_projection_on_inline_bundle ON app.publication_bundle;
+        DROP FUNCTION app.prevent_inline_option_projection_item();
+        DROP FUNCTION app.prevent_option_projection_on_inline_bundle();
+    """)
     op.execute("""
         INSERT INTO app.publication_payload(content_hash, payload)
         SELECT DISTINCT evidence.content_hash, evidence.payload

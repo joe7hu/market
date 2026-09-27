@@ -105,10 +105,6 @@ class OptionEvidenceArchive:
                                       WHERE task.decision_id = decision.id
                                         AND task.status NOT IN
                                           ('succeeded', 'completed', 'failed', 'cancelled'))
-                      AND NOT EXISTS (SELECT 1 FROM analysis.shadow_trade shadow
-                                      WHERE shadow.decision_id = decision.id
-                                        AND shadow.status NOT IN
-                                          ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired'))
                     ORDER BY decision.as_of, decision.id LIMIT %s
                     {lock}
                 """, [reference - timedelta(days=30),
@@ -140,11 +136,6 @@ class OptionEvidenceArchive:
                       WHERE task.decision_id = ANY(%s)
                         AND task.status NOT IN ('succeeded', 'completed', 'failed', 'cancelled')
                       UNION ALL
-                      SELECT 1 FROM analysis.shadow_trade shadow
-                      WHERE shadow.decision_id = ANY(%s)
-                        AND shadow.status NOT IN
-                          ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired')
-                      UNION ALL
                       SELECT 1 FROM app.publication publication
                       WHERE publication.analysis_run_id = ANY(%s)
                         AND publication.status = 'published'
@@ -153,7 +144,7 @@ class OptionEvidenceArchive:
                       WHERE dependent.primary_decision_id = ANY(%s)
                         AND dependent.evidence_state = 'local'
                     ) AS found
-                """, [selected, selected, selected, run_ids, selected]).fetchone()["found"]
+                """, [selected, selected, run_ids, selected]).fetchone()["found"]
                 if active:
                     raise ValueError("option scan gained an active reference; source retained")
                 archived_rows, packs, skipped = self._write_eligible_dependencies(connection, rows)

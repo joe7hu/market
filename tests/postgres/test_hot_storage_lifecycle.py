@@ -24,6 +24,7 @@ from investment_panel.infrastructure.postgres.ingestion import IngestionReposito
 from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
 from investment_panel.infrastructure.postgres.row_archive import RowArchive, MAX_PACK_BYTES
 from investment_panel.infrastructure.postgres.option_evidence_archive import OptionEvidenceArchive
+from investment_panel.infrastructure.postgres.panel_publications import published_tables
 from investment_panel.infrastructure.postgres.ticker_evidence_archive import TickerEvidenceArchive
 from investment_panel.infrastructure.postgres.archive_io import MAX_CHUNK_BYTES
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
@@ -234,6 +235,21 @@ def test_option_snapshot_and_features_are_read_projections_of_candidate(storage)
     }
     assert analysis.publication_rows("options-radar", "option_snapshot") == [snapshot]
     assert analysis.publication_rows("options-radar", "option_features") == [feature]
+    panel = published_tables(storage.runtime, ("option_snapshot", "option_features"))
+    for model, expected in {"option_snapshot": snapshot, "option_features": feature}.items():
+        assert len(panel[model]) == 1
+        assert panel[model][0]["publication_id"] == str(publication_id)
+        assert {key: value for key, value in panel[model][0].items()
+                if key not in {"publication_id", "publication_published_at"}} == expected
+    with pytest.raises(psycopg.Error, match="projected option model cannot be stored inline"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("""INSERT INTO app.publication_bundle_item
+                (bundle_id, model_name, stable_key, rank, content_hash)
+                SELECT publication.bundle_id, 'option_snapshot', 'duplicate', 2, item.content_hash
+                FROM app.publication publication JOIN app.publication_bundle_item item
+                  ON item.bundle_id = publication.bundle_id
+                WHERE publication.id = %s AND item.model_name = 'candidate_event'""",
+                [publication_id])
     distinct_feature = {**feature, "distinct_model_result": "keep"}
     second_run = analysis.start_run("options-radar", input_cutoff=datetime.now(UTC),
                                     code_version="projection-test", inputs={"distinct": str(uuid4())})
@@ -250,6 +266,10 @@ def test_option_snapshot_and_features_are_read_projections_of_candidate(storage)
             [second_id]).fetchone()
     assert second == {"projection_version": None, "physical": 3}
     assert analysis.publication_rows("options-radar", "option_features") == [distinct_feature]
+    with pytest.raises(psycopg.Error, match="projected option bundle has inline model"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("""UPDATE app.publication_bundle SET projection_version = 'option-subsets-v1'
+                WHERE id = (SELECT bundle_id FROM app.publication WHERE id = %s)""", [second_id])
 
 
 def test_input_normalization_lossless_precision_sharing_and_restart(storage):
@@ -1344,17 +1364,62 @@ def test_option_scan_needs_completed_successor_for_same_instrument(storage):
                                   [decision_id]).fetchone()["evidence_state"] == "local"
 
 
-def test_active_shadow_reference_keeps_option_scan_local(storage):
+def test_pending_shadow_keeps_compact_plan_and_quote_while_scan_archives(storage, monkeypatch):
     now, decision_id = _completed_option_scan(storage)
     with storage.runtime.transaction() as connection:
-        connection.execute("INSERT INTO analysis.shadow_trade (decision_id, status) VALUES (%s, 'pending')",
+        connection.execute("UPDATE analysis.option_decision SET entry_price = 5 WHERE decision_id = %s",
                            [decision_id])
+        connection.execute("""INSERT INTO analysis.option_feature
+            (run_id, snapshot_id, contract_id, quote_observed_at, feature_version)
+            SELECT decision.run_id, scan.snapshot_id, scan.contract_id,
+                   scan.quote_observed_at, 'pending-feature'
+            FROM analysis.option_decision scan JOIN analysis.decision decision
+              ON decision.id = scan.decision_id WHERE scan.decision_id = %s""", [decision_id])
+        shadow_id = connection.execute("""INSERT INTO analysis.shadow_trade (decision_id, status)
+            VALUES (%s, 'pending') RETURNING id""", [decision_id]).fetchone()["id"]
     result = OptionEvidenceArchive(storage).run(now=now, execute=True,
                                                  backup_token=_verified_backup(storage))
-    assert result["archived"] == 0
+    assert result["archived"] == 1
     with storage.runtime.read() as connection:
-        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s",
-                                  [decision_id]).fetchone()["evidence_state"] == "local"
+        compact = connection.execute("""SELECT scan.evidence_state, scan.entry_price,
+            scan.details, quote.mid, shadow.status
+            FROM analysis.option_decision scan
+            JOIN raw.option_quote quote ON quote.snapshot_id = scan.snapshot_id
+              AND quote.contract_id = scan.contract_id AND quote.observed_at = scan.quote_observed_at
+            JOIN analysis.shadow_trade shadow ON shadow.decision_id = scan.decision_id
+            WHERE scan.decision_id = %s""", [decision_id]).fetchone()
+        assert compact["evidence_state"] == "archived"
+        assert compact["entry_price"] is not None and compact["mid"] is not None
+        assert compact["details"]["evidence_state"] == "archived"
+        assert compact["status"] == "pending"
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.shadow_trade SET status = 'entered' WHERE id = %s", [shadow_id])
+    with monkeypatch.context() as unavailable:
+        def missing_nas(*_args, **_kwargs):
+            raise OSError("nas unavailable")
+        unavailable.setattr(storage, "_write_json_gzip", missing_nas)
+        with pytest.raises(OSError, match="nas unavailable"):
+            HotRetention(storage).run(phase="options", now=now, batch_size=25,
+                                      max_batches=5, execute=True)
+    with storage.runtime.read() as connection:
+        assert connection.execute("""SELECT q.provider_payload <> '{}'::jsonb AS present
+            FROM raw.option_quote q JOIN analysis.option_decision scan
+              ON scan.snapshot_id = q.snapshot_id AND scan.contract_id = q.contract_id
+             AND scan.quote_observed_at = q.observed_at
+            WHERE scan.decision_id = %s""", [decision_id]).fetchone()["present"]
+    released = HotRetention(storage).run(
+        phase="options", now=now, batch_size=25, max_batches=5, execute=True)
+    assert released["option_provider_payloads"] == 1
+    storage.archive_root.rename(storage.archive_root.with_name("offline"))
+    with storage.runtime.read() as connection:
+        quote = connection.execute("""SELECT q.provider_payload, q.mid
+            FROM raw.option_quote q JOIN analysis.option_decision scan
+              ON scan.snapshot_id = q.snapshot_id AND scan.contract_id = q.contract_id
+             AND scan.quote_observed_at = q.observed_at
+            WHERE scan.decision_id = %s""", [decision_id]).fetchone()
+        assert quote == {"provider_payload": {}, "mid": 5.0}
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.shadow_trade SET status = 'closed' WHERE id = %s", [shadow_id])
 
 
 def test_active_paper_reference_keeps_old_option_scan_local(storage):

@@ -91,8 +91,23 @@ class PublicationArchive:
                WHERE id = ANY(%s) AND status = 'superseded'
                  AND NOT EXISTS (SELECT 1 FROM analysis.ticker_decision decision
                                  WHERE decision.market_state_publication_id = publication.id)
+                 AND NOT EXISTS (SELECT 1 FROM analysis.shadow_trade shadow
+                                 WHERE shadow.metrics->>'publication_id' = publication.id::text
+                                   AND shadow.status NOT IN
+                                     ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired'))
                ORDER BY id FOR UPDATE""", [candidates],
         ).fetchall()
+        if rows:
+            # The publication row locks serialize new shadow references. A
+            # separate statement sees shadows committed while those locks waited.
+            active_shadows = {row["publication_id"] for row in connection.execute("""
+                SELECT DISTINCT shadow.metrics->>'publication_id' AS publication_id
+                FROM analysis.shadow_trade shadow
+                WHERE shadow.metrics->>'publication_id' = ANY(%s::text[])
+                  AND shadow.status NOT IN
+                    ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired')
+                """, [[str(row["id"]) for row in rows]]).fetchall()}
+            rows = [row for row in rows if str(row["id"]) not in active_shadows]
         ids = [row["id"] for row in rows]
         if not ids:
             return []
