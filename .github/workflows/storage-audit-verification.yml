@@ -1,0 +1,123 @@
+name: storage-audit-verification
+
+on:
+  push:
+    branches: [codex/storage-audit-20260927]
+    paths: [.github/workflows/storage-audit-verification.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  storage-audit:
+    if: github.ref == 'refs/heads/codex/storage-audit-20260927'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Apply guarded edits and freeze the candidate
+        run: |
+          set -euo pipefail
+          python .github/storage-audit-apply.py
+          git rm .github/storage-audit-apply.py .github/workflows/storage-audit-verification.yml .github/workflows/storage-audit-capsule.yml
+          git add src/investment_panel/infrastructure/postgres/ingestion.py src/investment_panel/infrastructure/postgres/migrations.py src/investment_panel/jobs/storage.py tests/postgres/test_schema_baseline.py
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: suppress unchanged storage writes and wire catalog audit'
+          git push origin HEAD:refs/heads/codex/storage-audit-20260927
+          mkdir -p "$RUNNER_TEMP/storage-proof"
+          git rev-parse HEAD | tee "$RUNNER_TEMP/storage-proof/candidate.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/storage-proof/market-source.tar.gz"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: '0.9.26'
+      - uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee
+        with:
+          postgres-version: '18'
+      - name: Install locked dependencies
+        run: |
+          uv sync --extra test --locked
+          npm ci --prefix frontend
+      - name: Prove regressions fail on original main
+        run: |
+          set -euo pipefail
+          red="$RUNNER_TEMP/storage-red"
+          git worktree add --detach "$red" 555de6b0b14c6d5c84c4283d5f4a6ebf285364b5
+          cp tests/postgres/test_storage_efficiency.py "$red/tests/postgres/"
+          set +e
+          (cd "$red" && uv run --extra test python -m pytest -q tests/postgres/test_storage_efficiency.py -k 'not storage_audit_covers' --junitxml="$RUNNER_TEMP/storage-proof/red.xml") 2>&1 | tee "$RUNNER_TEMP/storage-proof/red.log"
+          result=${PIPESTATUS[0]}
+          set -e
+          test "$result" -eq 1
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'storage-proof/red.xml').getroot()
+          assert not root.findall('.//error'), 'Setup errors are not regression proof'
+          cases = {node.attrib['name']: node for node in root.findall('.//testcase')}
+          assert cases['test_identical_option_retry_does_not_rewrite_any_persistent_row'].find('failure') is not None
+          PY
+          git worktree remove --force "$red"
+      - name: Bootstrap isolated audit database
+        env:
+          MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          ci_password="$(openssl rand -hex 32)"
+          PGPASSWORD=postgres psql "$MARKET_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE market_ci_login LOGIN PASSWORD '$ci_password' NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION"
+          export MARKET_APP_LOGIN_ROLE=market_ci_login
+          export MARKET_APP_DATABASE_PASSWORD="$ci_password"
+          uv run market-db-migrate
+          uv run python - <<'PY' > "$RUNNER_TEMP/storage-proof/schema-audit.json"
+          import json, os
+          from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+          from investment_panel.infrastructure.postgres.storage_audit import audit_storage
+          runtime = DatabaseRuntime(os.environ['MARKET_DATABASE_URL'])
+          runtime.open()
+          try:
+              print(json.dumps(audit_storage(runtime), default=str, indent=2))
+          finally:
+              runtime.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: storage-audit-early-proof
+          path: ${{ runner.temp }}/storage-proof/
+          retention-days: 7
+      - name: Affected PostgreSQL and API E2E
+        run: |
+          set -euo pipefail
+          uv run --extra test python -m pytest -q tests/postgres/test_storage_efficiency.py tests/postgres/test_hot_storage_lifecycle.py tests/postgres/test_decision_storage.py tests/postgres/test_postgres_ingestion.py tests/postgres/test_postgres_retention_backup.py tests/postgres/test_postgres_panel_catalog.py tests/postgres/test_schema_baseline.py tests/postgres/test_ticker_paper_execution.py tests/postgres/test_outcome_publication_recovery.py tests/application_api/test_api.py 2>&1 | tee "$RUNNER_TEMP/storage-proof/focused.log"
+      - name: Guards
+        run: set -o pipefail; make guards 2>&1 | tee "$RUNNER_TEMP/storage-proof/guards.log"
+      - name: Check
+        run: set -o pipefail; make check 2>&1 | tee "$RUNNER_TEMP/storage-proof/check.log"
+      - name: Frozen release gate
+        run: set -o pipefail; make release-gate 2>&1 | tee "$RUNNER_TEMP/storage-proof/release-gate.log"
+      - name: Confirm frozen source
+        if: always()
+        run: |
+          git rev-parse HEAD
+          git status --short
+          git diff --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: storage-audit-verification
+          path: ${{ runner.temp }}/storage-proof/
+          retention-days: 7
