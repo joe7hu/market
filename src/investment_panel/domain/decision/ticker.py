@@ -525,6 +525,7 @@ class MarketStateSnapshot(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
 
     contract_version: str = "market-state-snapshot.v1"
+    evidence_state: Literal["local", "archived"] = "local"
     snapshot_id: str = Field(min_length=1)
     publication_id: str | None = None
     as_of: datetime
@@ -580,7 +581,8 @@ class MarketStateSnapshot(BaseModel):
             raise ValueError("market snapshot timestamps must be timezone-aware")
         if _utc(self.as_of) != _utc(self.input_cutoff):
             raise ValueError("market snapshot as_of and input_cutoff must match")
-        if self.contract_version == "market-state-snapshot.v1" and self.availability == "available":
+        if (self.contract_version == "market-state-snapshot.v1"
+                and self.availability == "available" and self.evidence_state == "local"):
             if set(self.horizons) != set(MARKET_HORIZONS):
                 raise ValueError("available market snapshots require all market horizons")
             if any(
@@ -4453,6 +4455,8 @@ def _context_blockers_for(
             blockers.append("market_state_missing")
     else:
         if selected_kind is not ExpressionKind.CASH:
+            if snapshot.evidence_state == "archived":
+                blockers.append("market_state_evidence_archived")
             if snapshot.contract_version == "market-state-snapshot.v1" and snapshot.availability != "available":
                 blockers.append("market_state_unavailable")
             if snapshot.contract_version == "market-state-snapshot.v2":

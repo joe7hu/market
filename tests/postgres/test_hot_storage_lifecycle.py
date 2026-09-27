@@ -698,10 +698,17 @@ def test_ticker_compact_history_and_current_decision_work_without_nas(storage, m
     with storage.runtime.transaction() as connection:
         reconcile_instrument(connection, "TCOLD")
     repository = TickerDecisionRepository(storage.runtime)
-    old = build_ticker_decision("TCOLD", {"quotes": [{
+    old_rows = {"quotes": [{
         "symbol": "TCOLD", "price": 100, "observed_at": old_at - timedelta(minutes=1),
         "available_at": old_at - timedelta(minutes=1), "confirmed": True,
-    }]}, as_of=old_at)
+    }]}
+    seed = build_ticker_decision("TCOLD", old_rows, as_of=old_at)
+    snapshot = seed.market_state_snapshot.model_copy(update={"snapshot_id": "real-market:TCOLD"})
+    old = build_ticker_decision("TCOLD", old_rows, as_of=old_at,
+                                market_state_snapshot=snapshot)
+    assert old.portfolio_impacts
+    assert {impact.market_snapshot_id for impact in old.portfolio_impacts.values()} == {
+        snapshot.snapshot_id}
     old_id = repository.publish(old)["ticker_decision_id"]
     new = build_ticker_decision("TCOLD", {"quotes": [{
         "symbol": "TCOLD", "price": 101, "observed_at": now - timedelta(minutes=1),
@@ -743,6 +750,11 @@ def test_ticker_compact_history_and_current_decision_work_without_nas(storage, m
         assert history["evidence_archive_manifest_id"] == result["manifest_id"]
         assert history["resolution"]["action"] == old.resolution.action.value
         assert history["input_manifest"]["trade_plan"] is None
+        compact_decision = repository.by_id(old_id)
+        assert compact_decision.market_state_snapshot.snapshot_id == snapshot.snapshot_id
+        assert compact_decision.market_state_snapshot.evidence_state == "archived"
+        assert compact_decision.market_state_snapshot.availability == old.market_state_snapshot.availability
+        assert compact_decision.risk_policy_snapshot.blockers == old.risk_policy_snapshot.blockers
         assert archive.full_evidence(old_id) == {
             "status": "archived", "archive_manifest_id": result["manifest_id"],
         }

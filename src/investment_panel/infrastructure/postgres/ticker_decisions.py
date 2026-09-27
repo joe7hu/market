@@ -656,13 +656,13 @@ class TickerDecisionRepository:
             return None
 
     def by_id(self, decision_id: str) -> TickerDecision:
-        """Read an already-published identity without a new point-in-time cutoff."""
+        """Read a published or superseded identity without a new cutoff."""
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute("""
                 SELECT instrument.symbol AS ticker, decision.*
                 FROM analysis.ticker_decision_read decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                WHERE decision.id = %s::uuid AND decision.status = 'published'
+                WHERE decision.id = %s::uuid AND decision.status IN ('published', 'superseded')
             """, [decision_id]).fetchone()
         if row is None:
             raise ValueError("published ticker decision is missing")

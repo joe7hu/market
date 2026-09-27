@@ -378,6 +378,35 @@ def upgrade() -> None:
           ON analysis.ticker_decision FOR EACH ROW
           EXECUTE FUNCTION analysis.check_decision_evidence_refs();
 
+        CREATE FUNCTION analysis.compact_market_snapshot(p_snapshot jsonb)
+        RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+          SELECT jsonb_build_object('evidence_state', 'archived')
+                 || COALESCE(jsonb_object_agg(part.key, part.value), '{}'::jsonb)
+          FROM jsonb_each(CASE WHEN jsonb_typeof(p_snapshot) = 'object'
+            THEN p_snapshot ELSE '{}'::jsonb END) part
+          WHERE part.key = ANY(ARRAY[
+            'contract_version', 'snapshot_id', 'publication_id', 'as_of',
+            'input_cutoff', 'input_lineage', 'availability',
+            'availability_status', 'blockers'])
+        $$;
+        CREATE FUNCTION analysis.compact_risk_policy_snapshot(p_snapshot jsonb)
+        RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+          SELECT COALESCE(jsonb_object_agg(part.key, part.value), '{}'::jsonb)
+          FROM jsonb_each(CASE WHEN jsonb_typeof(p_snapshot) = 'object'
+            THEN p_snapshot ELSE '{}'::jsonb END) part
+          WHERE part.key = ANY(ARRAY[
+            'policy_version', 'policy_kind', 'sleeve_capital',
+            'max_risk_per_trade_pct', 'max_open_risk_pct',
+            'max_symbol_risk_pct', 'daily_loss_halt_pct',
+            'max_open_positions', 'defined_trade_fraction',
+            'defined_symbol_fraction', 'defined_total_fraction',
+            'csp_symbol_fraction', 'csp_total_fraction',
+            'ticker_loss_budget_pct', 'ticker_max_loss_pct',
+            'ticker_total_open_loss_pct', 'ticker_position_limit_pct',
+            'broker_net_liquidation', 'broker_available_capital',
+            'cash_balance', 'buying_power', 'account_observed_at',
+            'blockers'])
+        $$;
         CREATE FUNCTION analysis.check_ticker_archive_state()
         RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
@@ -386,6 +415,9 @@ def upgrade() -> None:
           END IF;
           IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
           IF NEW.evidence_state = 'archived' THEN
+            IF TG_OP = 'INSERT' THEN
+              RAISE EXCEPTION 'ticker archive transition lacks verified exact source coverage';
+            END IF;
             IF NEW.evidence_archive_manifest_id IS NULL
                OR NEW.input_payload_refs <> '{}'::jsonb
                OR COALESCE(NEW.input_manifest->'inputs', '{}'::jsonb) <> '{}'::jsonb
@@ -393,8 +425,16 @@ def upgrade() -> None:
                OR (TG_OP = 'UPDATE' AND NEW.archived_input_refs IS DISTINCT FROM OLD.input_payload_refs)
                OR NEW.market_state_context_hash IS NOT NULL
                OR NEW.risk_policy_context_hash IS NOT NULL
-               OR NEW.market_state_snapshot <> '{}'::jsonb
-               OR NEW.risk_policy_snapshot <> '{}'::jsonb
+               OR NEW.market_state_snapshot IS DISTINCT FROM
+                  analysis.compact_market_snapshot(CASE
+                    WHEN OLD.market_state_context_hash IS NULL THEN OLD.market_state_snapshot
+                    ELSE (SELECT context.payload FROM analysis.decision_context context
+                          WHERE context.content_hash = OLD.market_state_context_hash) END)
+               OR NEW.risk_policy_snapshot IS DISTINCT FROM
+                  analysis.compact_risk_policy_snapshot(CASE
+                    WHEN OLD.risk_policy_context_hash IS NULL THEN OLD.risk_policy_snapshot
+                    ELSE (SELECT context.payload FROM analysis.decision_context context
+                          WHERE context.content_hash = OLD.risk_policy_context_hash) END)
                OR jsonb_typeof(NEW.archived_context_refs) IS DISTINCT FROM 'object'
                OR (TG_OP = 'UPDATE' AND NEW.archived_context_refs IS DISTINCT FROM
                    jsonb_strip_nulls(jsonb_build_object(
@@ -585,13 +625,13 @@ def upgrade() -> None:
             d.input_manifest, d.opportunity_episode) AS resolution,
           d.policy_version, d.opportunity_episode_id, d.opportunity_cutoff,
           d.opportunity_episode, d.market_state_publication_id,
-          CASE WHEN d.evidence_state = 'archived' THEN NULL::jsonb
+          CASE WHEN d.evidence_state = 'archived' THEN d.market_state_snapshot
                WHEN d.market_state_context_hash IS NULL THEN d.market_state_snapshot
                ELSE (SELECT context.payload FROM analysis.decision_context context
                      WHERE context.content_hash = d.market_state_context_hash)
           END AS market_state_snapshot,
           analysis.expand_decision_impacts(d.portfolio_impacts, d.evidence_refs) AS portfolio_impacts,
-          CASE WHEN d.evidence_state = 'archived' THEN NULL::jsonb
+          CASE WHEN d.evidence_state = 'archived' THEN d.risk_policy_snapshot
                WHEN d.risk_policy_context_hash IS NULL THEN d.risk_policy_snapshot
                ELSE (SELECT context.payload FROM analysis.decision_context context
                      WHERE context.content_hash = d.risk_policy_context_hash)
@@ -655,6 +695,8 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION analysis.require_local_ticker_evidence()")
     op.execute("DROP TRIGGER ticker_decision_archive_state_valid ON analysis.ticker_decision")
     op.execute("DROP FUNCTION analysis.check_ticker_archive_state()")
+    op.execute("DROP FUNCTION analysis.compact_market_snapshot(jsonb)")
+    op.execute("DROP FUNCTION analysis.compact_risk_policy_snapshot(jsonb)")
     op.execute("DROP FUNCTION analysis.gc_archived_decision_payloads(text[])")
     op.execute("DROP FUNCTION analysis.gc_archived_decision_contexts(text[])")
     op.execute("""CREATE OR REPLACE FUNCTION analysis.reject_decision_context_mutation()

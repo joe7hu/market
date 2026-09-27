@@ -147,8 +147,19 @@ class TickerEvidenceArchive:
                         input_manifest = jsonb_set(input_manifest, '{inputs}', '{}'::jsonb, true),
                         archived_context_refs = jsonb_strip_nulls(jsonb_build_object(
                             'market', market_state_context_hash, 'policy', risk_policy_context_hash)),
+                        market_state_snapshot = analysis.compact_market_snapshot(
+                          CASE WHEN decision.market_state_context_hash IS NULL
+                            THEN decision.market_state_snapshot ELSE (
+                              SELECT context.payload FROM analysis.decision_context context
+                              WHERE context.content_hash = decision.market_state_context_hash)
+                            END),
+                        risk_policy_snapshot = analysis.compact_risk_policy_snapshot(
+                          CASE WHEN decision.risk_policy_context_hash IS NULL
+                            THEN decision.risk_policy_snapshot ELSE (
+                              SELECT context.payload FROM analysis.decision_context context
+                              WHERE context.content_hash = decision.risk_policy_context_hash)
+                            END),
                         market_state_context_hash = NULL, risk_policy_context_hash = NULL,
-                        market_state_snapshot = '{}'::jsonb, risk_policy_snapshot = '{}'::jsonb,
                         evidence_state = 'archived', evidence_archive_manifest_id = %s
                     WHERE id = ANY(%s) AND evidence_state = 'local'""",
                     [manifest_id, selected]).rowcount
