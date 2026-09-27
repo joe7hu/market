@@ -817,6 +817,7 @@ def test_ticker_governance_projection_binds_one_options_radar_revision(
 def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
     queries = []
     profiles = []
+    settings = []
 
     class Cursor:
         def execute(self, query):
@@ -826,6 +827,9 @@ def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
             return []
 
     class Connection:
+        def execute(self, query):
+            settings.append(query)
+
         def cursor(self, **_kwargs):
             return nullcontext(Cursor())
 
@@ -842,14 +846,16 @@ def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
     assert all("opportunity_rank_position <= 10500" in query for query in queries)
     # Keep the broad candidate scan on compact rows; expand only selected authority rows.
     assert all("FROM analysis.ticker_decision decision" in query for query in queries)
-    assert all(query.count("analysis.ticker_decision_read stored_decision") == 2 for query in queries)
+    assert all(query.count("current_decision_payload stored_decision") == 2 for query in queries)
     assert all("JOIN candidate_keys candidate ON candidate.id = decision.id" in query for query in queries)
-    assert all("LEFT JOIN analysis.ticker_decision_read stored_decision" in query for query in queries)
+    assert all("FROM analysis.ticker_decision_read" not in query for query in queries)
+    assert all("FROM current_decision_payload decision" in query for query in queries)
     assert all(
         query.index("FROM analysis.ticker_decision decision")
-        < query.index("LEFT JOIN analysis.ticker_decision_read stored_decision")
+        < query.index("LEFT JOIN current_decision_payload stored_decision")
         for query in queries
     )
+    assert settings == ["SET LOCAL enable_nestloop = off"] * 2
     assert profiles == [panel_models.TODAY_AUTHORITY_PROFILE] * 2
 
 

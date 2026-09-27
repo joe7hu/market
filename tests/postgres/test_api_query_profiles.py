@@ -25,7 +25,7 @@ def test_api_jit_policy_and_timeouts_do_not_leak_to_worker_transactions(migrated
             assert connection.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "15min"
         with runtime.snapshot(TODAY_AUTHORITY_PROFILE) as connection:
             assert connection.execute("SHOW jit").fetchone()["jit"] == "off"
-            assert connection.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "10s"
+            assert connection.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "20s"
         with pytest.raises(RuntimeError, match="rollback"):
             with runtime.transaction() as connection:
                 assert connection.execute("SHOW jit").fetchone()["jit"] == "off"

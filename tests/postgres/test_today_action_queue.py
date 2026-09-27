@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import psycopg
+import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.application.read_models.loaders import load_postgres_tables
@@ -225,6 +227,82 @@ def test_legacy_capital_action_change_creates_new_decision(migrated_postgres_dsn
                                      "FROM analysis.ticker_decision WHERE id = %s::uuid",
                                      [second["ticker_decision_id"]]).fetchone()
             assert row["action"] == "HOLD"
+    finally:
+        runtime.close()
+
+
+def test_today_reads_referenced_thesis_and_plan_from_current_decision(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    symbol = "W1P6READREF"
+    _insert_instruments(runtime, [symbol])
+    reference = datetime.now(UTC) - timedelta(hours=1)
+    decision = build_ticker_decision(symbol, {
+        "decision_queue": [{"symbol": symbol, "stance": "NEUTRAL", "available_at": reference.isoformat()}],
+        "theses": [{
+            "symbol": symbol,
+            "available_at": reference.isoformat(),
+            "thesis_json": {"core_thesis": "Retain the exact thesis"},
+        }],
+    }, as_of=reference)
+    try:
+        result = TickerDecisionRepository(runtime).publish(decision)
+        with runtime.transaction() as connection:
+            thesis_hash = connection.execute(
+                "SELECT analysis.intern_decision_payload(%s::jsonb) AS hash",
+                [Jsonb([{"available_at": reference.isoformat(),
+                         "thesis_json": {"core_thesis": "Retain the exact thesis"}}])],
+            ).fetchone()["hash"]
+            connection.execute("""
+                UPDATE analysis.ticker_decision
+                SET input_manifest = jsonb_set(input_manifest, '{inputs}',
+                                                 COALESCE(input_manifest->'inputs', '{}'::jsonb) - 'theses'),
+                    input_payload_refs = jsonb_build_object('theses', %s::text)
+                WHERE id = %s::uuid
+            """, [thesis_hash, result["ticker_decision_id"]])
+        with runtime.read() as connection:
+            stored = connection.execute("""
+                SELECT input_manifest, input_payload_refs
+                FROM analysis.ticker_decision WHERE id = %s::uuid
+            """, [result["ticker_decision_id"]]).fetchone()
+            expanded = connection.execute("""
+                SELECT input_manifest FROM analysis.ticker_decision_read
+                WHERE id = %s::uuid
+            """, [result["ticker_decision_id"]]).fetchone()["input_manifest"]
+        assert "theses" in stored["input_payload_refs"]
+        assert "theses" not in stored["input_manifest"].get("inputs", {})
+        rows = [row for page in today_authority_pages(
+            typed_config(migrated_postgres_dsn)) for row in page]
+        current = next(row for row in rows if row.get("ticker") == symbol)
+        assert current["opportunity_summary"]["rationale"] == expanded["inputs"]["theses"][0]["thesis_json"]["core_thesis"]
+    finally:
+        runtime.close()
+
+
+def test_today_rejects_missing_reference_outside_displayed_inputs(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    symbol = "W1P6MISSINGREF"
+    _insert_instruments(runtime, [symbol])
+    try:
+        result = TickerDecisionRepository(runtime).publish(
+            _decision(symbol, datetime.now(UTC) - timedelta(hours=1)))
+        with runtime.transaction() as connection:
+            connection.execute(
+                "ALTER TABLE analysis.ticker_decision DISABLE TRIGGER ticker_decision_input_refs_valid")
+            connection.execute("""
+                UPDATE analysis.ticker_decision
+                SET input_payload_refs = jsonb_build_object('unshown', %s::text)
+                WHERE id = %s::uuid
+            """, ["0" * 64, result["ticker_decision_id"]])
+            connection.execute(
+                "ALTER TABLE analysis.ticker_decision ENABLE TRIGGER ticker_decision_input_refs_valid")
+        with pytest.raises(psycopg.errors.RaiseException, match="missing immutable decision input payload"):
+            list(today_authority_pages(typed_config(migrated_postgres_dsn)))
     finally:
         runtime.close()
 

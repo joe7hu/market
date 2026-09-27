@@ -27,7 +27,7 @@ from investment_panel.infrastructure.postgres.runtime import API_PROFILE, Runtim
 
 __all__ = ["load_postgres_tables", "today_authority_pages"]
 
-TODAY_AUTHORITY_PROFILE = RuntimeProfile(statement_timeout_ms=10_000, jit=False)
+TODAY_AUTHORITY_PROFILE = RuntimeProfile(statement_timeout_ms=20_000, jit=False)
 
 
 class SchemaRevisionMismatch(RuntimeError):
@@ -1101,7 +1101,7 @@ def today_authority_pages(
     safe_plan_end = safe_plan_offset + safe_plan_limit
     safe_batch_size = max(1, min(int(batch_size), 100))
     query = f"""
-        WITH candidate_keys AS (
+        WITH candidate_keys AS MATERIALIZED (
             SELECT decision.id, decision.instrument_id, decision.as_of,
                    decision.published_at, decision.created_at,
                    count(*) OVER (
@@ -1128,7 +1128,50 @@ def today_authority_pages(
               AND decision.as_of <= now()
               AND decision.published_at IS NOT NULL
               AND decision.published_at <= now()
-        ), current_candidates AS (
+        ), current_decision_payload AS MATERIALIZED (
+            SELECT decision.id, decision.instrument_id, decision.as_of,
+                   decision.created_at, decision.decision_revision,
+                   decision.fundamental, decision.input_hash,
+                   decision.opportunity_episode, decision.opportunity_episode_id,
+                   decision.policy_version, decision.published_at,
+                   analysis.expand_decision_capital(
+                       decision.capital_action,
+                       analysis.expand_decision_resolution(
+                           decision.resolution, decision.evidence_refs,
+                           decision.input_manifest - 'inputs',
+                           decision.opportunity_episode),
+                       decision.evidence_refs) AS capital_action,
+                   analysis.expand_decision_resolution(
+                       decision.resolution, decision.evidence_refs,
+                       decision.input_manifest - 'inputs',
+                       decision.opportunity_episode) AS resolution,
+                   CASE WHEN decision.evidence_refs->>'selected_episode' = 'true'
+                        THEN decision.opportunity_episode->'selected_expression'
+                        ELSE decision.selected_expression END AS selected_expression,
+                   jsonb_set(
+                       analysis.expand_decision_manifest(
+                           CASE WHEN EXISTS (
+                               SELECT 1
+                               FROM jsonb_each_text(decision.input_payload_refs) ref
+                               LEFT JOIN analysis.decision_input_payload payload
+                                 ON payload.content_hash = ref.value
+                               WHERE payload.content_hash IS NULL
+                           ) THEN analysis.expand_decision_inputs(
+                               decision.input_manifest, decision.input_payload_refs)
+                           ELSE decision.input_manifest - 'inputs' END,
+                           decision.evidence_refs, decision.opportunity_episode),
+                       '{{inputs}}', jsonb_build_object('theses',
+                           CASE WHEN decision.input_payload_refs ? 'theses'
+                                THEN analysis.decision_payload(
+                                    decision.input_payload_refs->>'theses')
+                                ELSE decision.input_manifest #> '{{inputs,theses}}' END),
+                       true) AS input_manifest
+            FROM candidate_keys candidate
+            JOIN analysis.ticker_decision decision ON decision.id = candidate.id
+            WHERE candidate.current_row = 1
+              AND candidate.authority_count = 1
+              AND candidate.opportunity_authority_count = 1
+        ), current_candidates AS MATERIALIZED (
             SELECT decision.id AS decision_id,
                    decision.id::text AS ticker_decision_id,
                    instrument.symbol AS ticker, instrument.symbol,
@@ -1163,7 +1206,7 @@ def today_authority_pages(
                    candidate.authority_count,
                    candidate.opportunity_authority_count,
                    candidate.current_row
-            FROM analysis.ticker_decision_read decision
+            FROM current_decision_payload decision
             JOIN candidate_keys candidate ON candidate.id = decision.id
             JOIN catalog.instrument instrument
               ON instrument.id = decision.instrument_id
@@ -1399,7 +1442,7 @@ def today_authority_pages(
                        )
                    ) AS needs_missing_plan_validation
             FROM positioned_actions
-            LEFT JOIN analysis.ticker_decision_read stored_decision
+            LEFT JOIN current_decision_payload stored_decision
               ON stored_decision.id = positioned_actions.decision_id
             CROSS JOIN LATERAL (
                 SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan
@@ -1751,7 +1794,7 @@ def today_authority_pages(
               positioned_actions.trade_plan_position > {safe_plan_offset}
               AND positioned_actions.trade_plan_position <= {safe_plan_end}
              )
-        LEFT JOIN analysis.ticker_decision_read stored_decision
+        LEFT JOIN current_decision_payload stored_decision
           ON stored_decision.id = positioned_actions.decision_id
         CROSS JOIN LATERAL (
             SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan
@@ -1760,6 +1803,8 @@ def today_authority_pages(
     """
     runtime = runtime_for_config(config)
     with runtime.snapshot(TODAY_AUTHORITY_PROFILE) as connection:
+        # ponytail: The wide current-row CTE misestimates nested-loop joins; remove this planner guard when indexed compact Today rows replace it.
+        connection.execute("SET LOCAL enable_nestloop = off")
         with connection.cursor(name="today_authority") as cursor:
             cursor.execute(query)
             while rows := cursor.fetchmany(safe_batch_size):
