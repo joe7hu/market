@@ -24,6 +24,10 @@ QUOTE_PIN = """
             AND f.contract_id = q.contract_id AND f.quote_observed_at = q.observed_at)
     OR EXISTS (SELECT 1 FROM analysis.option_decision d WHERE d.snapshot_id = q.snapshot_id
             AND d.contract_id = q.contract_id AND d.quote_observed_at = q.observed_at)
+    OR EXISTS (SELECT 1 FROM analysis.option_decision d WHERE d.snapshot_id = q.snapshot_id
+            AND d.quote_observed_at = q.observed_at AND d.evidence_state = 'local'
+            AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(d.synthetic_legs, '[]'::jsonb)) leg
+                        WHERE leg->>'contract_id' = q.contract_id::text))
     OR EXISTS (SELECT 1 FROM analysis.option_relative_value r
             WHERE r.capture_generation_id = q.capture_generation_id AND r.contract_id = q.contract_id
               AND r.classification IN ('historical_static_arbitrage_candidate', 'verified_static_arbitrage_candidate'))
@@ -44,7 +48,7 @@ class HotRetention:
 
     def run(self, *, phase: str = "all", now: datetime | None = None,
             batch_size: int = 500, max_batches: int = 1, execute: bool = False,
-            option_days: int = 7, analysis_days: int = 30, time_budget_seconds: int = 60) -> dict[str, Any]:
+            option_days: int = 30, analysis_days: int = 30, time_budget_seconds: int = 60) -> dict[str, Any]:
         reference = now or datetime.now(UTC)
         if reference.tzinfo is None:
             raise ValueError("hot retention time must be timezone-aware")

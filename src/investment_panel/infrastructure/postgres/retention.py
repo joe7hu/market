@@ -21,7 +21,7 @@ from investment_panel.infrastructure.postgres.row_archive import MAX_PACK_BYTES,
 OPTION_PARTITION_RE = re.compile(r"^option_quote_(\d{4})(\d{2})(\d{2})?$")
 ROLLING_PUBLICATION_SCOPES = ("today", "options-radar", "options-decision-system")
 MARKET_PUBLICATION_SUPERSEDED_LIMIT = 48
-ROLLING_PUBLICATION_TRADING_DAYS = 7
+ROLLING_PUBLICATION_TRADING_DAYS = 30
 PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE = 500
 SCHEDULED_PUBLICATION_PROFILE = RuntimeProfile(statement_timeout_ms=90_000)
 
@@ -38,7 +38,7 @@ class RetentionRepository:
             raise ValueError("publication archive batch_size must be between 1 and 1000")
         reference = datetime.now(UTC)
         with self.runtime.transaction(JOB_PROFILE) as connection:
-            ids = _publication_candidates(connection, standard_cutoff=reference - timedelta(days=7),
+            ids = _publication_candidates(connection, standard_cutoff=reference - timedelta(days=30),
                 rolling_cutoff=_trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS), limit=batch_size)
             if execute and ids:
                 if self.archive is None:
@@ -47,8 +47,8 @@ class RetentionRepository:
             return {"phase": "publications", "candidates": len(ids), "deleted": 0, "dry_run": not execute}
 
     def prune(
-        self, *, now: datetime | None = None, option_days: int = 7,
-        analysis_days: int = 30, publication_days: int = 7, job_days: int = 30,
+        self, *, now: datetime | None = None, option_days: int = 30,
+        analysis_days: int = 30, publication_days: int = 30, job_days: int = 30,
         publication_batch_size: int = 40, dry_run: bool = False,
         vacuum_analyze: bool = False,
     ) -> dict[str, int]:
@@ -140,7 +140,7 @@ class RetentionRepository:
         *,
         now: datetime | None = None,
         batch_size: int = 25,
-        publication_days: int = 7,
+        publication_days: int = 30,
         dry_run: bool = False,
         vacuum_analyze: bool = False,
         candidate_ids: list[Any] | None = None,
@@ -164,6 +164,20 @@ class RetentionRepository:
                 connection, standard_cutoff=reference - timedelta(days=publication_days),
                 rolling_cutoff=rolling_cutoff, limit=None if dry_run else batch_size,
             )
+            if candidates:
+                # ponytail: Scope pin keeps legacy plan publication references safe;
+                # backfill indexed decision references before pruning these scopes.
+                protected_scopes = {row["id"] for row in connection.execute(
+                    "SELECT id FROM app.publication WHERE id = ANY(%s) "
+                    "AND scope IN ('ticker-opportunity-ranking', 'ticker-outcome-attribution')",
+                    [candidates],
+                ).fetchall()}
+                referenced = {row["canonical_publication_id"] for row in connection.execute(
+                    "SELECT DISTINCT canonical_publication_id FROM app.publication_bundle_item "
+                    "WHERE canonical_publication_id = ANY(%s)", [candidates],
+                ).fetchall()}
+                candidates = [candidate for candidate in candidates
+                              if candidate not in referenced and candidate not in protected_scopes]
             count = len(candidates)
             compact_counts = {}
             if not dry_run and candidates:
@@ -245,6 +259,7 @@ def _publication_candidates(
     suffix = "" if limit is None else "LIMIT %s"
     parameters: list[Any] = [
         MARKET_PUBLICATION_SUPERSEDED_LIMIT,
+        standard_cutoff,
         list(ROLLING_PUBLICATION_SCOPES),
         rolling_cutoff,
         ["market", *ROLLING_PUBLICATION_SCOPES],
@@ -269,7 +284,7 @@ def _publication_candidates(
         SELECT id
         FROM ranked
         WHERE (
-               (scope = 'market' AND superseded_rank > %s)
+               (scope = 'market' AND superseded_rank > %s AND generation_at < %s)
             OR (scope = ANY(%s) AND generation_at < %s)
             OR (scope <> ALL(%s) AND generation_at < %s)
         )
@@ -277,6 +292,10 @@ def _publication_candidates(
               SELECT 1
               FROM analysis.ticker_decision decision
               WHERE decision.market_state_publication_id = ranked.id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM app.publication_bundle_item item
+              WHERE item.canonical_publication_id = ranked.id
           )
         ORDER BY generation_at, id
         {suffix}

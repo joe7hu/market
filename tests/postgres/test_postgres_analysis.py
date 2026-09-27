@@ -651,7 +651,7 @@ def test_ticker_decision_latest_adapts_and_rejects_legacy_portfolio_impact_rows(
 
     with runtime.transaction() as connection:
         row = connection.execute(
-            "SELECT portfolio_impacts FROM analysis.ticker_decision WHERE decision_revision = %s",
+            "SELECT portfolio_impacts FROM analysis.ticker_decision_read WHERE decision_revision = %s",
             [decision.decision_revision],
         ).fetchone()
         legacy_impacts = {
@@ -661,7 +661,8 @@ def test_ticker_decision_latest_adapts_and_rejects_legacy_portfolio_impact_rows(
         for impact in legacy_impacts.values():
             impact.pop("ticker", None)
         connection.execute(
-            "UPDATE analysis.ticker_decision SET portfolio_impacts = %s::jsonb WHERE decision_revision = %s",
+            "UPDATE analysis.ticker_decision SET portfolio_impacts = %s::jsonb, "
+            "evidence_refs = evidence_refs - 'portfolio_impacts' WHERE decision_revision = %s",
             [Jsonb(legacy_impacts), decision.decision_revision],
         )
 

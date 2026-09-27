@@ -9,14 +9,22 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
+from psycopg import sql
+
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
 from investment_panel.infrastructure.postgres.row_copy_archive import write_large_row
 
 MAX_PACK_BYTES = 8 * 1024**2
 MAX_PACK_ROWS = 500
 RELATIONS = frozenset({
+    "ingest.source", "ingest.run", "ingest.payload", "catalog.instrument",
+    "raw.option_capture_generation",
+    "analysis.hypothesis", "analysis.experiment_family", "analysis.strategy_revision",
     "raw.option_quote", "analysis.option_relative_value", "analysis.run",
-    "analysis.ticker_decision", "app.publication", "app.publication_bundle",
+    "analysis.option_relative_value_verification",
+    "analysis.ticker_decision", "analysis.option_decision", "analysis.decision_evidence",
+    "analysis.option_feature", "analysis.decision", "raw.option_snapshot",
+    "catalog.option_contract", "app.publication", "app.publication_bundle",
     "app.publication_bundle_item", "app.publication_payload", "app.publication_item",
 })
 
@@ -57,6 +65,13 @@ class RowArchive:
                 self.service._update_manifest_metadata(manifest_id, {"source_row_ids": metadata["source_row_ids"]})
             if self.service.verify(manifest_id=manifest_id)["verified"] != 1:
                 raise ValueError("row archive verification failed; source rows retained")
+            # Parse archived values through the source table's PostgreSQL types.
+            # The JSON text stays in PostgreSQL; Python never rounds decimals.
+            typed = sql.SQL("SELECT to_jsonb(jsonb_populate_record(NULL::{}, %s::jsonb)) = %s::jsonb AS same").format(
+                sql.Identifier(*relation.split(".")))
+            for entry in pack:
+                if connection.execute(typed, [entry["row_json"], entry["row_json"]]).fetchone()["same"] is not True:
+                    raise ValueError("row archive typed restore changed source values; source retained")
             ids.append(manifest_id)
 
         for record in records:

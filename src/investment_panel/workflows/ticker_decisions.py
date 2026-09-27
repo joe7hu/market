@@ -119,6 +119,8 @@ def publish(
             )
             tables["stock_alpha_features"] = [alpha_feature] if alpha_feature is not None else []
             prior_decision = repository.latest(symbol)
+            if prior_decision is not None and prior_decision.as_of > reference:
+                raise ValueError("backdated evaluation cannot replace current ranking authority")
             prior_episode = prior_decision.opportunity_episode if prior_decision is not None else None
             # The benchmark is written before the read so its membership is
             # part of the same point-in-time input manifest as the decision.
@@ -179,67 +181,94 @@ def publish(
                 forecast = getattr(signal, "_strategy_forecast", None)
                 if forecast is not None:
                     analysis_repository.store_strategy_forecast(forecast)
-        ranking_run_id = analysis_repository.start_run(
-            RANKING_SCOPE,
-            input_cutoff=reference,
-            code_version=TICKER_OPPORTUNITY_RANKING_VERSION,
-            inputs=ranking_inputs,
-            feature_versions={"ranking": TICKER_OPPORTUNITY_RANKING_VERSION},
-            strategy_revision_id=next(
-                (
-                    int(artifact["strategy_revision_id"])
-                    for by_horizon in alpha_artifacts.values()
-                    for artifact in by_horizon.values()
-                    if artifact.get("availability_status") == "available"
-                ),
-                None,
-            ),
-        )
-        ranking_publication_id = analysis_repository.publish(
-            ranking_run_id,
-            RANKING_SCOPE,
-            models,
-            validation={
-                "scope": RANKING_SCOPE,
-                "evaluated_universe_complete": bool(
-                    rank_rows
-                    and rank_rows[0].eligible_universe is not None
-                    and rank_rows[0].eligible_universe.coverage_ratio
-                    >= rank_rows[0].eligible_universe.threshold
-                    and not rank_rows[0].eligible_universe.systemic_failure
-                ),
-                "paper_only": True,
-                "live_order_submission": False,
-            },
-            complete_run_summary={
-                "universe_count": len(selected),
-                "evaluated_count": len(records),
-                "failure_count": len(failures),
-                "ranking_version": TICKER_OPPORTUNITY_RANKING_VERSION,
-            },
-        )
-        rank_by_key = {
-            (rank.ticker, rank.decision_revision, rank.opportunity_episode_id): rank
-            for rank in rank_rows
-        }
-        for record in records:
-            current = record["decision"]
-            key = (current.ticker, current.decision_revision, current.opportunity_episode_id)
-            rank = rank_by_key[key]
-            rank_payload = rank.model_dump(mode="json")
-            rank_payload["ranking_publication_id"] = str(ranking_publication_id)
-            plan = record["plan"].model_copy(update={"publication_id": str(ranking_publication_id)})
-            decision = bind_trade_plan(record["decision"], plan).model_copy(update={
+        preflight = [
+            bind_trade_plan(record["decision"], record["plan"]).model_copy(update={
                 "instrument_state_snapshot": record["snapshot"].model_dump(mode="json"),
                 "alpha_signals": [signal.model_dump(mode="json") for signal in record["signals"]],
-                "opportunity_rank": rank_payload,
+                "opportunity_rank": record["rank"].model_dump(mode="json"),
             })
-            prior = repository.latest(decision.ticker)
-            if prior is not None and _same_published_decision(prior, decision):
-                skipped += 1
-            else:
-                published.append(repository.publish(decision))
-            decisions_for_paper.append(decision)
+            for record in records
+        ]
+        reused = [repository.publish(decision, reuse_only=True) for decision in preflight]
+        canonical_reused = {
+            decision.ticker: repository.by_id(result["ticker_decision_id"])
+            for decision, result in zip(preflight, reused)
+            if result["status"] == "unchanged"
+        }
+        current_publication_id = _current_ranking_covers(canonical_reused, analysis_repository)
+        if len(canonical_reused) == len(records) and current_publication_id is not None:
+            skipped += len(records)
+            decisions_for_paper = [canonical_reused[decision.ticker] for decision in preflight]
+            ranking_publication_id = current_publication_id
+        else:
+            if canonical_reused:
+                models = _reuse_canonical_publication_rows(models, canonical_reused, analysis_repository)
+            ranking_run_id = analysis_repository.start_run(
+                RANKING_SCOPE,
+                input_cutoff=reference,
+                code_version=TICKER_OPPORTUNITY_RANKING_VERSION,
+                inputs=ranking_inputs,
+                feature_versions={"ranking": TICKER_OPPORTUNITY_RANKING_VERSION},
+                strategy_revision_id=next(
+                    (
+                        int(artifact["strategy_revision_id"])
+                        for by_horizon in alpha_artifacts.values()
+                        for artifact in by_horizon.values()
+                        if artifact.get("availability_status") == "available"
+                    ),
+                    None,
+                ),
+            )
+            ranking_publication_id = analysis_repository.publish(
+                ranking_run_id,
+                RANKING_SCOPE,
+                models,
+                validation={
+                    "scope": RANKING_SCOPE,
+                    "evaluated_universe_complete": bool(
+                        rank_rows
+                        and rank_rows[0].eligible_universe is not None
+                        and rank_rows[0].eligible_universe.coverage_ratio
+                        >= rank_rows[0].eligible_universe.threshold
+                        and not rank_rows[0].eligible_universe.systemic_failure
+                    ),
+                    "paper_only": True,
+                    "live_order_submission": False,
+                },
+                complete_run_summary={
+                    "universe_count": len(selected),
+                    "evaluated_count": len(records),
+                    "failure_count": len(failures),
+                    "ranking_version": TICKER_OPPORTUNITY_RANKING_VERSION,
+                },
+            )
+            rank_by_key = {
+                (rank.ticker, rank.decision_revision, rank.opportunity_episode_id): rank
+                for rank in rank_rows
+            }
+            for record in records:
+                current = record["decision"]
+                if current.ticker in canonical_reused:
+                    skipped += 1
+                    decisions_for_paper.append(canonical_reused[current.ticker])
+                    continue
+                key = (current.ticker, current.decision_revision, current.opportunity_episode_id)
+                rank = rank_by_key[key]
+                rank_payload = rank.model_dump(mode="json")
+                rank_payload["ranking_publication_id"] = str(ranking_publication_id)
+                plan = record["plan"].model_copy(update={"publication_id": str(ranking_publication_id)})
+                decision = bind_trade_plan(record["decision"], plan).model_copy(update={
+                    "instrument_state_snapshot": record["snapshot"].model_dump(mode="json"),
+                    "alpha_signals": [signal.model_dump(mode="json") for signal in record["signals"]],
+                    "opportunity_rank": rank_payload,
+                })
+                result = repository.publish(decision)
+                if result["status"] == "unchanged":
+                    skipped += 1
+                    decisions_for_paper.append(repository.by_id(result["ticker_decision_id"]))
+                else:
+                    published.append(result)
+                    decisions_for_paper.append(decision)
     # Keep publication bounded to selected history. The scheduled outcome-
     # refresh job owns all-ticker historical maturity.
     outcome_result = (
@@ -520,6 +549,80 @@ def _rank_records(
     return [record["rank"] for record in records], models, ranking_inputs
 
 
+def _reuse_canonical_publication_rows(models: Mapping[str, Any],
+                                      decisions: Mapping[str, Any],
+                                      repository: AnalysisRepository) -> dict[str, list[dict[str, Any]]]:
+    """Put the persisted row in a mixed bundle for each unchanged ticker."""
+    prior: dict[str, dict[str, Any]] = {}
+    for ticker, decision in decisions.items():
+        publication_id = decision.trade_plan.publication_id if decision.trade_plan else None
+        publication = repository.publication_payloads_by_id(RANKING_SCOPE, publication_id) if publication_id else None
+        if publication is None:
+            raise ValueError(f"canonical ranking publication is missing for {ticker}")
+        prior[ticker] = publication
+    result: dict[str, list[dict[str, Any]]] = {}
+    for model_name, rows in models.items():
+        merged: list[dict[str, Any]] = []
+        replaced: set[str] = set()
+        for row in rows:
+            ticker = str(row.get("ticker") or "")
+            if ticker not in decisions:
+                merged.append(dict(row))
+                continue
+            if ticker in replaced:
+                continue
+            originals = [dict(item) for item in prior[ticker].get(model_name, [])
+                         if str(item.get("ticker") or "") == ticker]
+            if not originals:
+                raise ValueError(f"canonical {model_name} is missing for {ticker}")
+            if model_name in {"trade_plan", "opportunity_rank"}:
+                for item in originals:
+                    item["_canonical_publication_id"] = decisions[ticker].trade_plan.publication_id
+            merged.extend(originals)
+            replaced.add(ticker)
+        result[model_name] = merged
+    return result
+
+
+def _current_ranking_covers(decisions: Mapping[str, Any],
+                            repository: AnalysisRepository) -> str | None:
+    """Reuse the current bundle only when it exposes every persisted plan."""
+    if not decisions:
+        return None
+    current_id, models = repository.current_ranking_rows()
+    ranks = models.get("opportunity_rank", [])
+    plans = models.get("trade_plan", [])
+    for ticker, decision in decisions.items():
+        expected_rank = (decision.opportunity_rank or {}).get("rank_id")
+        expected_plan = decision.trade_plan
+        if expected_rank is None or expected_plan is None:
+            return None
+        snapshot = decision.instrument_state_snapshot or {}
+        if sum(str(row.get("ticker") or "") == ticker
+               and str(row.get("snapshot_id") or "") == str(snapshot.get("snapshot_id") or "")
+               for row in models.get("instrument_state_snapshot", [])) != 1:
+            return None
+        expected_signals = sorted(str(row.get("signal_id") or "") for row in decision.alpha_signals)
+        current_signals = sorted(str(row.get("signal_id") or "")
+                                 for row in models.get("alpha_signal", [])
+                                 if str(row.get("ticker") or "") == ticker)
+        if current_signals != expected_signals:
+            return None
+        if sum(str(row.get("ticker") or "") == ticker
+               and str(row.get("decision_revision") or "") == decision.decision_revision
+               and str(row.get("opportunity_episode_id") or "") == decision.opportunity_episode_id
+               and str(row.get("rank_id") or "") == str(expected_rank) for row in ranks) != 1:
+            return None
+        if sum(str(row.get("ticker") or "") == ticker
+               and str(row.get("decision_revision") or "") == decision.decision_revision
+               and str(row.get("opportunity_episode_id") or "") == decision.opportunity_episode_id
+               and str(row.get("trade_plan_id") or "") == expected_plan.trade_plan_id
+               and str(row.get("publication_id") or "") == expected_plan.publication_id
+               for row in plans) != 1:
+            return None
+    return current_id
+
+
 def _rank_after_safety(rank: OpportunityRank, decision: Any) -> OpportunityRank:
     cash = decision.selected_expression
     impact = decision.portfolio_impacts.get(ExpressionKind.CASH)
@@ -681,26 +784,6 @@ def _artifact_forecast(
     if forecast.strategy_forecast_id != persisted_id:
         return None
     return forecast
-
-
-def _same_published_decision(left: Any, right: Any) -> bool:
-    try:
-        same_rank = (
-            OpportunityRank.model_validate(left.opportunity_rank)
-            == OpportunityRank.model_validate(right.opportunity_rank)
-        ) if left.opportunity_rank is not None and right.opportunity_rank is not None else (
-            left.opportunity_rank is None and right.opportunity_rank is None
-        )
-    except (TypeError, ValueError):
-        same_rank = False
-    return (
-        left.input_manifest.input_hash == right.input_manifest.input_hash
-        and left.market_state_publication_id == right.market_state_publication_id
-        and same_rank
-        and (left.trade_plan.trade_plan_id if left.trade_plan else None)
-        == (right.trade_plan.trade_plan_id if right.trade_plan else None)
-        and left.selected_expression.kind == right.selected_expression.kind
-    )
 
 
 def _finite_number(value: Any) -> float | None:
@@ -957,7 +1040,6 @@ def _current_trade_plan_for_decision(
         if str(row.get("ticker") or row.get("symbol") or "").upper() == decision.ticker
         and str(row.get("decision_revision") or "") == decision.decision_revision
         and str(row.get("opportunity_episode_id") or "") == decision.opportunity_episode_id
-        and str(row.get("publication_id") or "") == str(rank.get("publication_id") or "")
     ]
     if len(matches) != 1:
         return None, "trade_plan_missing"

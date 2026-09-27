@@ -6,6 +6,8 @@ from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
+from hashlib import sha256
+import json
 from math import isfinite
 import time
 from typing import Any, Iterable, Mapping
@@ -62,6 +64,70 @@ HORIZON_SESSIONS = {
 STOCK_COST_MODEL_VERSION = "stock-close-estimated-cost-v1"
 STOCK_COST_PER_SIDE_BPS = 10.0
 TICKER_RANKING_SCOPE = "ticker-opportunity-ranking"
+SEMANTIC_FINGERPRINT_VERSION = "ticker-decision-semantic.v2"
+
+# These fields identify the evaluation or values generated only from its
+# cutoff. Source inputs and source versions are included separately, unchanged.
+_EVALUATION_FIELDS = frozenset({
+    "as_of", "input_cutoff", "cutoff", "input_hash", "decision_revision",
+    "rank_id", "signal_id", "snapshot_id", "matrix_id", "publication_id",
+    "ranking_publication_id", "trade_plan_id", "impact_id", "expression_identity",
+    "selected_expression_identity", "opportunity_episode_id", "episode_id",
+    "current_revision", "thesis_revision", "first_seen_at", "last_updated_at",
+    "market_snapshot_id", "market_state_publication_id",
+})
+
+
+def semantic_decision_fingerprint(decision: TickerDecision) -> str:
+    """Hash exact source facts and decision terms, excluding evaluation-only IDs."""
+    value = decision.model_dump(mode="json")
+    manifest = dict(value.get("input_manifest") or {})
+    manifest.pop("as_of", None)
+    manifest.pop("input_hash", None)
+    for key in ("instrument_state_snapshot", "alpha_signals", "opportunity_rank",
+                "trade_plan", "reference_signal"):
+        manifest.pop(key, None)
+
+    def semantic(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            return {key: semantic(child) for key, child in item.items()
+                    if key not in _EVALUATION_FIELDS and key != "provenance"}
+        if isinstance(item, list):
+            return [semantic(child) for child in item]
+        return item
+
+    payload = {
+        "version": SEMANTIC_FINGERPRINT_VERSION,
+        "manifest": manifest,  # Includes exact source timestamps and revisions.
+        "market_publication_id": (
+            value.get("market_state_publication_id")
+            if not str(value.get("market_state_publication_id") or "").startswith("local-publication:")
+            else None
+        ),
+        "code_version": manifest.get("code_version"),
+        "policy_version": value.get("policy_version"),
+        "decision": semantic({
+            key: value.get(key) for key in (
+                "tactical", "fundamental", "capital_action", "risk_policy",
+                "expressions", "selected_expression", "resolution", "opportunity_episode",
+                "market_state_snapshot", "portfolio_impacts", "risk_policy_snapshot",
+                "instrument_state_snapshot", "alpha_signals", "opportunity_rank",
+                "trade_plan", "reference_signal", "data_requests", "learning_history",
+            )
+        }),
+    }
+    for horizon in ("tactical", "fundamental"):
+        fact = ((payload["decision"].get(horizon) or {}).get("fact_that_would_flip") or {})
+        if (fact.get("available_at") and value.get("as_of")
+            and datetime.fromisoformat(fact["available_at"]).astimezone(UTC)
+                == datetime.fromisoformat(value["as_of"]).astimezone(UTC)):
+            fact.pop("available_at")
+    # This display TTL is minted as evaluation time plus 15 minutes. Reuse the
+    # frozen old TTL until it expires; the repository then forces a new decision.
+    reference_signal = payload["decision"].get("reference_signal") or {}
+    reference_signal.pop("expires_at", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    return f"{SEMANTIC_FINGERPRINT_VERSION}:{sha256(encoded.encode('utf-8')).hexdigest()}"
 
 # Attribution needs plan lineage, not the immutable multi-megabyte evidence
 # snapshots. Keep this projection bounded while retaining every historical
@@ -71,17 +137,25 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
         SELECT decision.id::text AS decision_id, instrument.symbol AS ticker,
                decision.decision_revision, decision.contract_version,
                decision.as_of, decision.tactical, decision.fundamental,
-               decision.capital_action, decision.resolution,
+               analysis.expand_decision_capital(decision.capital_action,
+                 analysis.expand_decision_resolution(decision.resolution, decision.evidence_refs,
+                   decision.input_manifest, decision.opportunity_episode), decision.evidence_refs) AS capital_action,
+               analysis.expand_decision_resolution(decision.resolution, decision.evidence_refs,
+                 decision.input_manifest, decision.opportunity_episode) AS resolution,
                decision.policy_version, decision.opportunity_episode_id,
                decision.opportunity_cutoff, decision.risk_policy,
-               decision.expressions, decision.selected_expression,
+               CASE WHEN decision.evidence_refs->>'expressions_episode' = 'true'
+                    THEN decision.opportunity_episode->'expressions' ELSE decision.expressions END AS expressions,
+               CASE WHEN decision.evidence_refs->>'selected_episode' = 'true'
+                    THEN decision.opportunity_episode->'selected_expression'
+                    ELSE decision.selected_expression END AS selected_expression,
                decision.data_requests, decision.learning_history,
                jsonb_build_object(
                    'as_of', decision.as_of,
                    'input_hash', decision.input_hash,
                    'code_version', decision.code_version,
                    'experiment_id', decision.experiment_id,
-                   'inputs', COALESCE(decision.input_manifest->'inputs', jsonb_build_object(
+                   'inputs', COALESCE(manifest.value->'inputs', jsonb_build_object(
                        'decision', jsonb_build_array(jsonb_build_object(
                            'field', 'decision',
                            'source_id', 'postgresql',
@@ -89,8 +163,8 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                            'available_at', decision.as_of
                        ))
                    )),
-                   'source_versions', COALESCE(decision.input_manifest->'source_versions', '{}'::jsonb),
-                   'signal_declarations', COALESCE(decision.input_manifest->'signal_declarations', '[]'::jsonb),
+                   'source_versions', COALESCE(manifest.value->'source_versions', '{}'::jsonb),
+                   'signal_declarations', COALESCE(manifest.value->'signal_declarations', '[]'::jsonb),
                    'alpha_signals', COALESCE((
                        SELECT jsonb_agg(jsonb_build_object(
                            'signal_id', signal->'signal_id',
@@ -98,23 +172,23 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                            'strategy_forecast_id', signal->'strategy_forecast_id'
                        ))
                        FROM jsonb_array_elements(
-                           COALESCE(decision.input_manifest->'alpha_signals', '[]'::jsonb)
+                           COALESCE(manifest.value->'alpha_signals', '[]'::jsonb)
                        ) AS signal
-                       WHERE signal->>'signal_id' = decision.input_manifest->'trade_plan'->>'alpha_signal_id'
+                       WHERE signal->>'signal_id' = manifest.value->'trade_plan'->>'alpha_signal_id'
                    ), '[]'::jsonb),
                    'opportunity_rank', COALESCE(
-                       (decision.input_manifest->'opportunity_rank') - 'input_lineage'::text,
+                       (manifest.value->'opportunity_rank') - 'input_lineage'::text,
                        '{}'::jsonb
                    ),
-                   'trade_plan', COALESCE(decision.input_manifest->'trade_plan', '{}'::jsonb)
+                   'trade_plan', COALESCE(manifest.value->'trade_plan', '{}'::jsonb)
                ) AS input_manifest,
                decision.market_state_publication_id::text,
                jsonb_build_object(
                    'snapshot_id', COALESCE(
-                       decision.input_manifest->'trade_plan'->>'market_snapshot_id',
+                       manifest.value->'trade_plan'->>'market_snapshot_id',
                        'compact-attribution:' || decision.id::text
                    ),
-                   'publication_id', decision.input_manifest->'trade_plan'->>'market_state_publication_id',
+                   'publication_id', manifest.value->'trade_plan'->>'market_state_publication_id',
                    'as_of', decision.as_of,
                    'input_cutoff', decision.as_of,
                    'availability', 'unavailable',
@@ -124,10 +198,12 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                NULL::jsonb AS risk_policy_snapshot,
                decision.opportunity_episode
         FROM analysis.ticker_decision decision
+        CROSS JOIN LATERAL (SELECT analysis.expand_decision_manifest(
+            decision.input_manifest, decision.evidence_refs, decision.opportunity_episode) AS value) manifest
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE decision.status IN ('published', 'superseded')
           AND decision.as_of <= %s
-          AND jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
+          AND jsonb_typeof(manifest.value->'trade_plan') = 'object'
     )
     SELECT decisions.*
     FROM decisions
@@ -341,13 +417,35 @@ def _validate_persisted_stock_forecast(
         raise ValueError("actionable stock path forecast and evaluation artifact lineage mismatch")
 
 
+def _record_decision_checkpoint(connection: Any, decision_id: Any, decision: TickerDecision) -> None:
+    connection.execute("""
+        INSERT INTO analysis.ticker_decision_checkpoint
+          (ticker_decision_id, check_day, first_checked_at,
+           last_checked_at, evaluation_count, health_state)
+        VALUES (%s, %s, %s, %s, 1, %s)
+        ON CONFLICT (ticker_decision_id, check_day) DO UPDATE SET
+          first_checked_at = LEAST(analysis.ticker_decision_checkpoint.first_checked_at,
+                                   EXCLUDED.first_checked_at),
+          last_checked_at = GREATEST(analysis.ticker_decision_checkpoint.last_checked_at,
+                                    EXCLUDED.last_checked_at),
+          evaluation_count = analysis.ticker_decision_checkpoint.evaluation_count
+            + CASE WHEN EXCLUDED.last_checked_at > analysis.ticker_decision_checkpoint.last_checked_at
+                   THEN 1 ELSE 0 END,
+          health_state = CASE
+            WHEN EXCLUDED.last_checked_at > analysis.ticker_decision_checkpoint.last_checked_at
+            THEN EXCLUDED.health_state ELSE analysis.ticker_decision_checkpoint.health_state END
+    """, [decision_id, decision.as_of.astimezone(UTC).date(), decision.as_of,
+          decision.as_of, "degraded" if decision.context_blockers else "ok"])
+
+
 class TickerDecisionRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
-    def publish(self, decision: TickerDecision) -> dict[str, Any]:
+    def publish(self, decision: TickerDecision, *, reuse_only: bool = False) -> dict[str, Any]:
         """Publish an immutable decision revision and its input manifest."""
 
+        fingerprint = semantic_decision_fingerprint(decision)
         payload = decision.model_dump(mode="json")
         payload["input_manifest"] = {
             **dict(payload.get("input_manifest") or {}),
@@ -364,6 +462,57 @@ class TickerDecisionRepository:
             ).fetchone()
             if instrument is None:
                 raise ValueError("ticker instrument is not in the catalog")
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                [f"ticker-decision:{instrument['id']}"],
+            )
+            prior = connection.execute("""
+                SELECT id, as_of, decision_revision, semantic_fingerprint
+                FROM analysis.ticker_decision
+                WHERE instrument_id = %s AND status = 'published'
+                ORDER BY as_of DESC, published_at DESC NULLS LAST, id DESC
+                LIMIT 1 FOR UPDATE
+            """, [instrument["id"]]).fetchone()
+            if prior is not None and decision.as_of < prior["as_of"]:
+                historical = connection.execute("""
+                    SELECT id, decision_revision FROM analysis.ticker_decision
+                    WHERE instrument_id = %s AND as_of = %s AND semantic_fingerprint = %s
+                    ORDER BY published_at DESC NULLS LAST, id DESC LIMIT 1
+                """, [instrument["id"], decision.as_of, fingerprint]).fetchone()
+                if historical is not None:
+                    _record_decision_checkpoint(connection, historical["id"], decision)
+                    return {"status": "unchanged", "ticker_decision_id": str(historical["id"]),
+                            "decision_revision": historical["decision_revision"]}
+            if prior is not None and decision.as_of >= prior["as_of"]:
+                prior_fingerprint = prior["semantic_fingerprint"]
+                prior_decision = None
+                if prior_fingerprint is None or prior_fingerprint == fingerprint:
+                    prior_row = connection.execute("""
+                        SELECT instrument.symbol AS ticker, decision.*
+                        FROM analysis.ticker_decision_read decision
+                        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                        WHERE decision.id = %s
+                    """, [prior["id"]]).fetchone()
+                    try:
+                        prior_decision = _decision_from_row(prior_row)
+                    except (TypeError, ValueError, KeyError):
+                        prior_decision = None
+                    if prior_fingerprint is None and prior_decision is not None:
+                        prior_fingerprint = semantic_decision_fingerprint(prior_decision)
+                prior_signal = prior_decision.reference_signal if prior_decision is not None else None
+                if (prior_decision is not None and prior_fingerprint == fingerprint and
+                    (prior_signal is None or decision.as_of < prior_signal.expires_at)):
+                    connection.execute("""
+                        UPDATE analysis.ticker_decision
+                        SET semantic_fingerprint = COALESCE(semantic_fingerprint, %s),
+                            last_evaluated_at = GREATEST(COALESCE(last_evaluated_at, as_of), %s)
+                        WHERE id = %s
+                    """, [fingerprint, decision.as_of, prior["id"]])
+                    _record_decision_checkpoint(connection, prior["id"], decision)
+                    return {"status": "unchanged", "ticker_decision_id": str(prior["id"]),
+                            "decision_revision": prior["decision_revision"]}
+            if reuse_only:
+                return {"status": "changed"}
             plan = decision.trade_plan
             typed_signals = tuple(
                 signal for signal in decision.alpha_signals
@@ -400,6 +549,17 @@ class TickerDecisionRepository:
                     forecast_id=next(iter(forecast_ids)),
                 )
             compact_manifest, input_refs = intern_input_manifest(connection, payload["input_manifest"])
+            evidence = connection.execute("""
+                SELECT compact_manifest::text AS manifest, compact_resolution::text AS resolution,
+                       compact_capital::text AS capital,
+                       compact_expressions::text AS expressions, compact_selected::text AS selected,
+                       compact_impacts::text AS impacts, refs::text AS refs
+                FROM analysis.intern_decision_evidence(
+                    %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb)
+            """, [compact_manifest, Jsonb(payload["resolution"]), Jsonb(payload["capital_action"]),
+                  Jsonb(payload["expressions"]),
+                  Jsonb(payload.get("selected_expression")), Jsonb(payload["opportunity_episode"]),
+                  Jsonb(payload.get("portfolio_impacts") or {})]).fetchone()
             market_context_hash = store_context(connection, payload.get("market_state_snapshot"))
             policy_context_hash = store_context(connection, payload.get("risk_policy_snapshot"))
             row = connection.execute(
@@ -412,13 +572,14 @@ class TickerDecisionRepository:
                     expressions, selected_expression, data_requests,
                     learning_history, input_manifest, market_state_publication_id,
                     market_state_snapshot, portfolio_impacts, risk_policy_snapshot,
-                    market_state_context_hash, risk_policy_context_hash, input_payload_refs, inputs_normalized, status
+                    market_state_context_hash, risk_policy_context_hash, input_payload_refs, inputs_normalized,
+                    evidence_refs, evidence_normalized, semantic_fingerprint,
+                    last_evaluated_at, status
                 ) VALUES (
                     %s, %s, %s, %s, now(), %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s::jsonb, true, 'published'
+                    %s, %s, %s, %s, %s, %s, %s::jsonb, true, %s::jsonb, true, %s, %s, %s
                 )
-                ON CONFLICT (instrument_id, decision_revision) DO NOTHING
                 RETURNING id::text
                 """,
                 [
@@ -428,31 +589,31 @@ class TickerDecisionRepository:
                     decision.input_manifest.code_version,
                     decision.input_manifest.experiment_id,
                     Jsonb(payload["tactical"]), Jsonb(payload["fundamental"]),
-                    Jsonb(payload["capital_action"]), Jsonb(payload["resolution"]),
+                    evidence["capital"], evidence["resolution"],
                     decision.policy_version, decision.opportunity_episode.episode_id,
                     decision.opportunity_episode.cutoff,
                     Jsonb(payload["opportunity_episode"]), Jsonb(payload["risk_policy"]),
-                    Jsonb(payload["expressions"]), Jsonb(payload.get("selected_expression")),
+                    evidence["expressions"], evidence["selected"],
                     Jsonb(payload["data_requests"]), Jsonb(payload["learning_history"]),
-                    compact_manifest,
+                    evidence["manifest"],
                     _uuid_or_none(decision.market_state_publication_id),
                     Jsonb({}),
-                    Jsonb(payload.get("portfolio_impacts") or {}),
+                    evidence["impacts"],
                     Jsonb({}),
-                    market_context_hash, policy_context_hash, input_refs,
+                    market_context_hash, policy_context_hash, input_refs, evidence["refs"],
+                    fingerprint, decision.as_of,
+                    "superseded" if prior is not None and decision.as_of < prior["as_of"] else "published",
                 ],
             ).fetchone()
             if row is None:
-                row = connection.execute(
-                    "SELECT id::text FROM analysis.ticker_decision_read WHERE instrument_id = %s AND decision_revision = %s",
-                    [instrument["id"], decision.decision_revision],
-                ).fetchone()
+                raise ValueError("decision insert did not return an immutable identity")
             decision_id = str(row["id"])
+            _record_decision_checkpoint(connection, row["id"], decision)
             connection.execute(
                 """
                 UPDATE analysis.ticker_decision
                 SET status = 'superseded'
-                WHERE instrument_id = %s AND id <> %s::uuid AND status = 'published' AND as_of < %s
+                WHERE instrument_id = %s AND id <> %s::uuid AND status = 'published' AND as_of <= %s
                 """,
                 [instrument["id"], decision_id, decision.as_of],
             )
@@ -465,7 +626,8 @@ class TickerDecisionRepository:
                     """,
                     [decision_id, request.field, request.ticker, Jsonb(request.model_dump(mode="json"))],
                 )
-        return {"status": "published", "ticker_decision_id": decision_id, "decision_revision": decision.decision_revision}
+        return {"status": "published",
+                "ticker_decision_id": decision_id, "decision_revision": decision.decision_revision}
 
     def latest(self, ticker: str, *, reference: datetime | None = None) -> TickerDecision | None:
         rows = self._current_decision_rows(
@@ -479,6 +641,19 @@ class TickerDecisionRepository:
             # Legacy rows remain readable through the raw panel model, but a
             # malformed row must not block a new canonical publication.
             return None
+
+    def by_id(self, decision_id: str) -> TickerDecision:
+        """Read an already-published identity without a new point-in-time cutoff."""
+        with self.runtime.read(JOB_PROFILE) as connection:
+            row = connection.execute("""
+                SELECT instrument.symbol AS ticker, decision.*
+                FROM analysis.ticker_decision_read decision
+                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                WHERE decision.id = %s::uuid AND decision.status = 'published'
+            """, [decision_id]).fetchone()
+        if row is None:
+            raise ValueError("published ticker decision is missing")
+        return _decision_from_row(row)
 
     def _current_decision_rows(
         self, *, reference: datetime, ticker: str | None = None,
@@ -917,13 +1092,19 @@ class TickerDecisionRepository:
                            payload.payload->'evaluated_universe_complete' AS evaluated_universe_complete,
                            payload.payload->>'trade_utility' AS trade_utility,
                            payload.payload->>'trade_plan_id' AS trade_plan_id,
-                           publication.id::text AS publication_id,
+                           coalesce(bundle_item.canonical_publication_id::text,
+                                    payload.payload->>'publication_id', publication.id::text)
+                               AS publication_id,
                            publication.published_at
                     FROM app.current_publication_item item
                     JOIN app.publication_payload payload
                       ON payload.content_hash = item.content_hash
                     JOIN app.publication publication
                       ON publication.id = item.publication_id
+                    LEFT JOIN app.publication_bundle_item bundle_item
+                      ON bundle_item.bundle_id = publication.bundle_id
+                     AND bundle_item.model_name = item.model_name
+                     AND bundle_item.stable_key = item.stable_key
                     JOIN analysis.run run
                       ON run.id = publication.analysis_run_id
                     WHERE item.scope = %s
@@ -956,7 +1137,9 @@ class TickerDecisionRepository:
                         LIMIT 1
                     ), source_rows AS MATERIALIZED (
                         SELECT item.model_name, item.rank,
-                               chosen.id::text AS publication_id, chosen.published_at,
+                               coalesce(item.canonical_publication_id::text,
+                                        payload.payload->>'publication_id', chosen.id::text)
+                                   AS publication_id, chosen.published_at,
                                payload.payload
                         FROM chosen_publication chosen
                         JOIN app.publication_bundle_item item
@@ -967,7 +1150,8 @@ class TickerDecisionRepository:
                           AND item.model_name = ANY(%s)
                         UNION ALL
                         SELECT item.model_name, item.rank,
-                               chosen.id::text AS publication_id, chosen.published_at,
+                               coalesce(item.payload->>'publication_id', chosen.id::text)
+                                   AS publication_id, chosen.published_at,
                                item.payload
                         FROM chosen_publication chosen
                         JOIN app.publication_item item
@@ -1412,7 +1596,7 @@ class TickerDecisionRepository:
                        '{{}}'::jsonb AS portfolio_impacts,
                        NULL::jsonb AS risk_policy_snapshot
                 FROM selected_decisions selected
-                JOIN analysis.ticker_decision decision ON decision.id = selected.id
+                JOIN analysis.ticker_decision_read decision ON decision.id = selected.id
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 ORDER BY selected.priority, COALESCE(selected.last_checked_at, selected.as_of), selected.as_of, selected.id
                 """,
@@ -1459,7 +1643,7 @@ class TickerDecisionRepository:
                 """
                 SELECT EXISTS (
                     SELECT 1
-                    FROM analysis.ticker_decision decision
+                    FROM analysis.ticker_decision_read decision
                     WHERE decision.status IN ('published', 'superseded')
                       AND decision.as_of <= %s
                       AND jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
@@ -1555,7 +1739,7 @@ class TickerDecisionRepository:
             legacy_count = connection.execute(
                 """
                 SELECT count(*) AS count
-                FROM analysis.ticker_decision decision
+                FROM analysis.ticker_decision_read decision
                 WHERE decision.status IN ('published', 'superseded')
                   AND decision.as_of <= %s
                   AND jsonb_typeof(decision.input_manifest->'trade_plan') IS DISTINCT FROM 'object'
@@ -2712,7 +2896,8 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "data_requests": row["data_requests"],
         "learning_history": row["learning_history"],
         "input_manifest": manifest,
-        "market_state_publication_id": row.get("market_state_publication_id") if hasattr(row, "get") else None,
+            "market_state_publication_id": str(row["market_state_publication_id"])
+                if row["market_state_publication_id"] is not None else None,
         "market_state_snapshot": row.get("market_state_snapshot") if hasattr(row, "get") else None,
         "portfolio_impacts": portfolio_impacts,
         "risk_policy_snapshot": row.get("risk_policy_snapshot") if hasattr(row, "get") else None,

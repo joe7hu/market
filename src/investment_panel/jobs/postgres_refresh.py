@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from investment_panel.settings import AppConfig, load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
+from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
 from investment_panel.infrastructure.postgres.today_analysis import refresh_today_publication
 from investment_panel.workflows.market import refresh_market_publication, terminal_bar_retry
 from investment_panel.infrastructure.postgres.outcomes import OutcomeRepository
@@ -347,6 +349,8 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
             ),
         }),
         ("retention", True, lambda: RetentionRepository(runtime_for_config(config), archive_root=config.nas.storage_archive_dir).prune()),
+        ("storage_accounting", False, lambda: StorageArchiveService(
+            runtime_for_config(config), Path(config.nas.storage_archive_dir)).account(record=True)),
         ("database_snapshot", False, lambda: snapshot_database.run(config_path)),
     ]
     results: list[dict[str, Any]] = []

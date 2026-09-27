@@ -32,7 +32,7 @@ from investment_panel.infrastructure.postgres.storage_guard import storage_capac
 # Only these phases have a production archive writer.  Publication and
 # derived detail is retained or recomputed locally; keeping them out of this
 # set prevents the CLI from advertising a writer that does not exist.
-ARCHIVE_KINDS = frozenset({"fundamental-history", "options", "decision-manifests", "publications"})
+ARCHIVE_KINDS = frozenset({"fundamental-history", "options", "option-scans", "decision-manifests", "publications"})
 _JSON_ARCHIVE_KINDS = frozenset({"fundamental-history", "publications", "derived"})
 ARCHIVE_FREE_RESERVE_BYTES = 10 * 1024**3
 _ARCHIVE_DIRS = {
@@ -87,6 +87,95 @@ class StorageArchiveService:
         self.runtime = runtime
         self.archive_root = archive_root
 
+    def account(self, *, record: bool = False) -> dict[str, Any]:
+        """Measure the PostgreSQL filesystem and a conservative 30-day trend."""
+        with self.runtime.read(JOB_PROFILE) as connection:
+            data_dir = str(connection.execute("SELECT ops.postgres_data_directory() AS path").fetchone()["path"])
+            database_bytes = int(connection.execute("SELECT pg_database_size(current_database()) AS bytes").fetchone()["bytes"])
+            sizes = connection.execute(STORAGE_SIZE_QUERY).fetchall()
+            archive = connection.execute("""
+                SELECT COALESCE(sum((metadata->>'uncompressed_bytes')::bigint), 0)::bigint AS bytes,
+                       COALESCE(sum(row_count), 0)::bigint AS rows
+                FROM ops.storage_archive_manifest
+                WHERE verification_status IN ('verified', 'restored')
+                  AND metadata ? 'uncompressed_bytes'
+            """).fetchone()
+            backlog = connection.execute("""
+                SELECT
+                  (SELECT count(*) FROM analysis.ticker_decision
+                   WHERE as_of < now() - interval '30 days'
+                     AND evidence_state = 'local') AS decisions,
+                  (SELECT count(*) FROM analysis.option_decision scan
+                   JOIN analysis.decision decision ON decision.id = scan.decision_id
+                   WHERE decision.as_of < now() - interval '30 days'
+                     AND scan.evidence_state = 'local') AS option_scans
+            """).fetchone()
+        path = Path(os.environ.get("MARKET_STORAGE_DATABASE_PATH") or data_dir)
+        if not path.is_dir():
+            return {"status": "unavailable", "path": str(path), "forecast_confidence": "unavailable",
+                    "reason": "postgresql_data_directory_not_local"}
+        usage = shutil.disk_usage(path)
+        now = datetime.now(UTC)
+        logical = sum(int(row["bytes"]) for row in sizes if row["relation"] in {
+            "analysis.ticker_decision", "analysis.decision_input_payload", "analysis.decision_context",
+            "analysis.option_decision", "analysis.decision", "analysis.decision_evidence",
+            "analysis.option_feature", "analysis.option_relative_value", "app.publication_payload",
+        })
+        if record:
+            with self.runtime.transaction(JOB_PROFILE) as connection:
+                connection.execute("""
+                    INSERT INTO ops.storage_daily_accounting
+                      (sample_day, sampled_at, database_bytes, volume_free_bytes,
+                       logical_evidence_bytes, archived_bytes, archive_rows)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (sample_day) DO UPDATE SET
+                      sampled_at = EXCLUDED.sampled_at, database_bytes = EXCLUDED.database_bytes,
+                      volume_free_bytes = EXCLUDED.volume_free_bytes,
+                      logical_evidence_bytes = EXCLUDED.logical_evidence_bytes,
+                      archived_bytes = EXCLUDED.archived_bytes, archive_rows = EXCLUDED.archive_rows
+                """, [now.date(), now, database_bytes, usage.free, logical,
+                      int(archive["bytes"]), int(archive["rows"])])
+        with self.runtime.read(JOB_PROFILE) as connection:
+            samples = [dict(row) for row in connection.execute("""
+                SELECT * FROM ops.storage_daily_accounting
+                ORDER BY sample_day DESC LIMIT 30
+            """).fetchall()]
+        samples.reverse()
+        rate = None
+        logical_rate = None
+        throughput = None
+        confidence = "provisional"
+        if len(samples) >= 3:
+            first, last = samples[0], samples[-1]
+            days = (last["sample_day"] - first["sample_day"]).days
+            if days > 0:
+                rate = max(0, int(first["volume_free_bytes"]) - int(last["volume_free_bytes"]),
+                           int(last["database_bytes"]) - int(first["database_bytes"])) / days
+                throughput = max(0, int(last["archived_bytes"]) - int(first["archived_bytes"])) / days
+                logical_rate = (int(last["logical_evidence_bytes"]) -
+                                int(first["logical_evidence_bytes"])) / days
+                confidence = "measured"
+        # Until three distinct production days exist, use the existing history
+        # growth estimate. Reusable PostgreSQL pages never increase free space.
+        if rate is None:
+            rate = 0.7 * 1024**3
+        forecast = max(0, int(usage.free - 30 * rate))
+        reserve = 15 * 1024**3
+        return {
+            "status": "degraded" if forecast <= reserve else "ok",
+            "path": str(path), "sampled_at": now.isoformat(), "sample_count": len(samples),
+            "forecast_confidence": confidence, "database_bytes": database_bytes,
+            "volume_free_bytes": usage.free, "logical_evidence_bytes": logical,
+            "archived_logical_bytes": int(archive["bytes"]), "archive_rows": int(archive["rows"]),
+            "archive_throughput_bytes_per_day": None if throughput is None else int(throughput),
+            "logical_evidence_growth_bytes_per_day": None if logical_rate is None else int(logical_rate),
+            "measured_growth_bytes_per_day": int(rate), "forecast_30d_free_bytes": forecast,
+            "reserve_bytes": reserve,
+            "archive_backlog": {"decisions": int(backlog["decisions"]),
+                                "option_scans": int(backlog["option_scans"])},
+            "protected_bytes": None, "protected_bytes_status": "reference_graph_pending",
+        }
+
     def plan(self) -> dict[str, Any]:
         """Return read-only capacity and candidate measurements."""
 
@@ -116,6 +205,7 @@ class StorageArchiveService:
             "local_free_bytes": local.free,
             "local_capacity_scope": "CLI working-directory filesystem, not necessarily PostgreSQL storage",
             "database_volume": database_volume(),
+            "accounting": self.account(),
             "nas_free_bytes": nas.free if nas else None,
             "nas_free_reserve_bytes": ARCHIVE_FREE_RESERVE_BYTES,
             "decision_manifest_chunk_limit_bytes": 64 * 1024**2,
@@ -753,25 +843,27 @@ class StorageArchiveService:
             int(max(0.0, (reference - min(end for _, end in archive_candidates)).total_seconds()))
             if archive_candidates else 0
         )
-        # A seven-day linear estimate is intentionally withheld until daily
-        # accounting samples exist; reporting null is safer than a fiction.
+        accounting = self.account()
         return {
             "local": {"path": str(Path.cwd()), "free_bytes": local.free, "total_bytes": local.total,
                       "scope": "application_working_directory_not_database_measurement"},
             "database_volume": database_volume(),
             "nas": None if nas is None else {"path": str(self.archive_root), "free_bytes": nas.free, "total_bytes": nas.total},
             "table_sizes": [dict(row) for row in table_rows],
-            "forecast_30d_bytes": None,
-            "forecast_status": "pending_daily_accounting",
+            "forecast_30d_bytes": accounting.get("forecast_30d_free_bytes"),
+            "forecast_status": accounting.get("forecast_confidence"),
+            "accounting": accounting,
             "archive_verification_failures": int(failures["count"]),
             "active_reclamation": [dict(row) for row in active],
-            "full_history_collection_allowed": storage_capacity(path=Path.cwd()).history_collection_allowed,
+            "full_history_collection_allowed": accounting["status"] == "ok"
+                and storage_capacity(path=accounting["path"],
+                    forecast_free_bytes=accounting.get("forecast_30d_free_bytes")).history_collection_allowed,
             "archive_lag_seconds": None,
             "archive_lag_status": "use_verified_manifests_and_hot_retention_checkpoints",
             "oldest_partition_age_seconds": archive_lag_seconds,
             "hot_partition_age_days": hot_age_days,
             "retention_backlog": {**dict(retention), "option_archive_candidates": len(archive_candidates)},
-            "projected_free_space_bytes": None,
+            "projected_free_space_bytes": accounting.get("forecast_30d_free_bytes"),
         }
 
     def _setting_json(self, key: str) -> dict[str, Any]:

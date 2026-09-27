@@ -3,9 +3,12 @@ from datetime import UTC, datetime, timedelta
 from psycopg.types.json import Jsonb
 
 from investment_panel.application.read_models.loaders import load_postgres_tables
-from investment_panel.domain.decision import build_ticker_decision
+from investment_panel.domain.decision import CapitalActionType, build_ticker_decision
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
-from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
+from investment_panel.infrastructure.postgres.panel_models import today_authority_pages
+from investment_panel.infrastructure.postgres.ticker_decisions import (
+    TickerDecisionRepository, semantic_decision_fingerprint,
+)
 from conftest import typed_config
 
 
@@ -148,6 +151,84 @@ def test_current_ticker_selector_rejects_duplicate_episode_across_timestamps(
         runtime.close()
 
 
+def test_current_ticker_selector_skips_malformed_newer_shape(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        _insert_instruments(runtime, ["W1P6SHAPE"])
+        reference = datetime.now(UTC) - timedelta(hours=1)
+        older = _decision("W1P6SHAPE", reference - timedelta(days=1))
+        newer = _decision("W1P6SHAPE", reference)
+        repository = TickerDecisionRepository(runtime)
+        repository.publish(older)
+        repository.publish(newer)
+        assert older.decision_revision != newer.decision_revision
+        with runtime.transaction() as connection:
+            connection.execute("""
+                UPDATE analysis.ticker_decision
+                SET capital_action = '[]'::jsonb, evidence_refs = '{}'::jsonb
+                WHERE decision_revision = %s
+            """, [newer.decision_revision])
+            connection.execute("UPDATE analysis.ticker_decision SET status = 'published' WHERE decision_revision = %s",
+                               [older.decision_revision])
+        rows = [row for page in today_authority_pages(
+            typed_config(migrated_postgres_dsn)) for row in page]
+        assert any(row.get("ticker") == "W1P6SHAPE"
+                   and row.get("decision_revision") == older.decision_revision for row in rows), rows
+    finally:
+        runtime.close()
+
+
+def test_backdated_publish_does_not_displace_current_authority(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        _insert_instruments(runtime, ["W1P6LATE"])
+        now = datetime.now(UTC) - timedelta(hours=1)
+        repository = TickerDecisionRepository(runtime)
+        current = _decision("W1P6LATE", now)
+        repository.publish(current)
+        historical = _decision("W1P6LATE", now - timedelta(days=1))
+        stored = repository.publish(historical)
+        assert repository.publish(historical)["ticker_decision_id"] == stored["ticker_decision_id"]
+        rows = load_postgres_tables(typed_config(migrated_postgres_dsn), ("ticker_decisions",))[0]["ticker_decisions"]
+        assert len(rows) == 1
+        assert rows[0]["decision_revision"] == current.decision_revision
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS n FROM analysis.ticker_decision").fetchone()["n"] == 2
+    finally:
+        runtime.close()
+
+
+def test_legacy_capital_action_change_creates_new_decision(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        _insert_instruments(runtime, ["W1P6ACTION"])
+        repository = TickerDecisionRepository(runtime)
+        original = _decision("W1P6ACTION", datetime.now(UTC) - timedelta(hours=1))
+        original = original.model_copy(update={"resolution": None})
+        first = repository.publish(original)
+        changed = original.model_copy(update={
+            "capital_action": original.capital_action.model_copy(update={"action": CapitalActionType.HOLD}),
+        })
+        assert semantic_decision_fingerprint(original) != semantic_decision_fingerprint(changed)
+        second = repository.publish(changed)
+        assert second["status"] == "published"
+        assert second["ticker_decision_id"] != first["ticker_decision_id"]
+        with runtime.read() as connection:
+            row = connection.execute("SELECT capital_action->>'action' AS action "
+                                     "FROM analysis.ticker_decision WHERE id = %s::uuid",
+                                     [second["ticker_decision_id"]]).fetchone()
+            assert row["action"] == "HOLD"
+    finally:
+        runtime.close()
+
+
 def test_compact_funnel_episode_validation_fails_closed(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -181,20 +262,18 @@ def test_compact_funnel_episode_validation_fails_closed(
             connection.execute(
                 """
                 UPDATE analysis.ticker_decision
-                SET expressions = jsonb_set(
-                        expressions, '{STOCK,availability_status}',
-                        to_jsonb('available'::text), true
-                    ),
-                    opportunity_episode = jsonb_set(
+                    SET opportunity_episode = jsonb_set(
                         opportunity_episode, '{expressions,STOCK,availability_status}',
                         to_jsonb('available'::text), true
                     )
                 """
             )
             connection.execute(
-                "UPDATE analysis.ticker_decision "
-                "SET portfolio_impacts = jsonb_set("
-                "portfolio_impacts, '{STOCK,market_state_publication_id}', 'null'::jsonb)"
+                    "UPDATE analysis.ticker_decision base "
+                    "SET portfolio_impacts = jsonb_set("
+                    "expanded.portfolio_impacts, '{STOCK,market_state_publication_id}', 'null'::jsonb), "
+                    "evidence_refs = base.evidence_refs - 'portfolio_impacts' "
+                    "FROM analysis.ticker_decision_read expanded WHERE expanded.id = base.id"
             )
             for symbol in symbols[1:]:
                 decision = decisions[symbol]
@@ -230,8 +309,9 @@ def test_compact_funnel_episode_validation_fails_closed(
                 if symbol == "FSELTERMS":
                     connection.execute(
                         "UPDATE analysis.ticker_decision "
-                        "SET selected_expression = jsonb_set("
-                        "selected_expression, '{rationale}', to_jsonb(%s::text)) "
+                        "SET evidence_refs = evidence_refs - 'selected_episode', "
+                        "selected_expression = jsonb_set("
+                        "opportunity_episode->'selected_expression', '{rationale}', to_jsonb(%s::text)) "
                         "WHERE decision_revision = %s",
                         ["Corrupt selected economic terms.", decision.decision_revision],
                     )

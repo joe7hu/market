@@ -1122,11 +1122,13 @@ class AnalysisRepository:
                     cursor.executemany(
                         """
                         INSERT INTO app.publication_bundle_item
-                            (bundle_id, model_name, stable_key, rank, instrument_id, content_hash)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                            (bundle_id, model_name, stable_key, rank, instrument_id,
+                             content_hash, canonical_publication_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                         """,
                         [[bundle_id, row["model_name"], row["stable_key"], row["rank"],
-                          row["instrument_id"], row["content_hash"]] for row in bundle_rows],
+                          row["instrument_id"], row["content_hash"],
+                          row["canonical_publication_id"]] for row in bundle_rows],
                     )
             publication = connection.execute(
                 """
@@ -1161,6 +1163,45 @@ class AnalysisRepository:
                     raise ValueError("atomic publication requires a running analysis run")
         return publication_id
 
+    def current_ranking_rows(self) -> tuple[str | None, dict[str, list[dict[str, Any]]]]:
+        """Read the current ranking identity and canonical row lineage together."""
+        with self.runtime.snapshot() as connection:
+            publication = connection.execute(
+                "SELECT id::text AS id, bundle_id FROM app.publication "
+                "WHERE scope = 'ticker-opportunity-ranking' AND status = 'published' "
+                "ORDER BY published_at DESC LIMIT 1"
+            ).fetchone()
+            if publication is None:
+                return None, {}
+            if publication["bundle_id"] is not None:
+                rows = connection.execute("""
+                    SELECT item.model_name, payload.payload,
+                           item.canonical_publication_id::text AS canonical_publication_id
+                    FROM app.publication_bundle_item item
+                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    WHERE item.bundle_id = %s AND item.model_name IN
+                      ('instrument_state_snapshot', 'alpha_signal', 'opportunity_rank', 'trade_plan')
+                    ORDER BY item.model_name, item.rank
+                """, [publication["bundle_id"]]).fetchall()
+            else:
+                rows = connection.execute("""
+                    SELECT item.model_name, item.payload,
+                           NULL::text AS canonical_publication_id
+                    FROM app.publication_item item
+                    WHERE item.publication_id = %s::uuid
+                      AND item.model_name IN
+                        ('instrument_state_snapshot', 'alpha_signal', 'opportunity_rank', 'trade_plan')
+                    ORDER BY item.model_name, item.rank
+                """, [publication["id"]]).fetchall()
+        models: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            payload = dict(row["payload"] or {})
+            payload["publication_id"] = str(
+                row["canonical_publication_id"] or payload.get("publication_id")
+                or publication["id"])
+            models.setdefault(str(row["model_name"]), []).append(payload)
+        return str(publication["id"]), models
+
     def publication_rows(
         self,
         scope: str,
@@ -1177,10 +1218,15 @@ class AnalysisRepository:
                 rows = connection.execute(
                     """
                     SELECT payload.payload, publication.id::text AS publication_id,
+                           bundle_item.canonical_publication_id::text AS canonical_publication_id,
                            publication.published_at
                     FROM app.current_publication_item item
                     JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
                     JOIN app.publication publication ON publication.id = item.publication_id
+                    LEFT JOIN app.publication_bundle_item bundle_item
+                      ON bundle_item.bundle_id = publication.bundle_id
+                     AND bundle_item.model_name = item.model_name
+                     AND bundle_item.stable_key = item.stable_key
                     WHERE item.scope = %s AND item.model_name = %s AND publication.status = 'published'
                     ORDER BY item.rank
                     """,
@@ -1201,6 +1247,7 @@ class AnalysisRepository:
                         """
                         SELECT item.payload
                                , publication.id::text AS publication_id,
+                               NULL::text AS canonical_publication_id,
                                publication.published_at
                         FROM app.publication publication
                         JOIN app.publication_item item ON item.publication_id = publication.id
@@ -1214,7 +1261,11 @@ class AnalysisRepository:
         for row in rows:
             payload = dict(row["payload"] or {})
             if include_lineage:
-                if model_name in {"trade_plan", "outcome_attribution"} or "publication_id" not in payload:
+                if scope == "ticker-opportunity-ranking" and model_name in {"opportunity_rank", "trade_plan"}:
+                    payload["publication_id"] = str(
+                        row["canonical_publication_id"] or payload.get("publication_id")
+                        or row["publication_id"])
+                elif model_name in {"trade_plan", "outcome_attribution"} or "publication_id" not in payload:
                     payload["publication_id"] = str(row["publication_id"])
                 if row["published_at"] is not None:
                     payload.setdefault("publication_published_at", row["published_at"].isoformat())
@@ -1340,6 +1391,27 @@ class AnalysisRepository:
                 return None
             payload_rows = _publication_payload_rows(connection, row)
         return _publication_result(row, payload_rows)
+
+    def publication_payloads_by_id(
+        self, scope: str, publication_id: str | UUID,
+    ) -> dict[str, list[dict[str, Any]]] | None:
+        """Read exact stored bundle objects without adding read-time lineage."""
+        try:
+            publication_uuid = UUID(str(publication_id))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        with self.runtime.read() as connection:
+            row = connection.execute(
+                "SELECT id AS publication_id, bundle_id FROM app.publication "
+                "WHERE scope = %s AND id = %s", [scope, publication_uuid],
+            ).fetchone()
+            if row is None:
+                return None
+            payload_rows = _publication_payload_rows(connection, row)
+        models: dict[str, list[dict[str, Any]]] = {}
+        for item in payload_rows:
+            models.setdefault(str(item["model_name"]), []).append(dict(item["payload"] or {}))
+        return models
 
     def publication_rows_at_or_before(
         self,
@@ -1503,7 +1575,9 @@ def _prepare_models(models: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[s
             if stable_key in keys:
                 raise ValueError(f"duplicate publication key for {model_name}: {stable_key}")
             keys.add(stable_key)
-            rows.append({"stable_key": stable_key, "instrument_id": payload.pop("instrument_id", None), "payload": payload})
+            rows.append({"stable_key": stable_key, "instrument_id": payload.pop("instrument_id", None),
+                         "canonical_publication_id": payload.pop("_canonical_publication_id", None),
+                         "payload": payload})
         prepared[model_name] = rows
     return prepared
 
@@ -1520,6 +1594,7 @@ def _bundle_rows(prepared: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[di
                 "stable_key": str(row["stable_key"]),
                 "rank": rank,
                 "instrument_id": row.get("instrument_id"),
+                "canonical_publication_id": row.get("canonical_publication_id"),
                 "content_hash": _hash(payload),
                 "payload": payload,
             })
@@ -1552,7 +1627,8 @@ def _publication_payload_rows(connection: Any, row: Mapping[str, Any]) -> Sequen
     if row["bundle_id"] is not None:
         return connection.execute(
             """
-            SELECT item.model_name, item.rank, payload.payload
+            SELECT item.model_name, item.rank, item.canonical_publication_id,
+                   payload.payload
             FROM app.publication_bundle_item item
             JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
             WHERE item.bundle_id = %s
@@ -1562,7 +1638,8 @@ def _publication_payload_rows(connection: Any, row: Mapping[str, Any]) -> Sequen
         ).fetchall()
     return connection.execute(
         """
-        SELECT item.model_name, item.rank, item.payload
+        SELECT item.model_name, item.rank, NULL::uuid AS canonical_publication_id,
+               item.payload
         FROM app.publication_item item
         WHERE item.publication_id = %s
         ORDER BY item.model_name, item.rank
@@ -1591,6 +1668,11 @@ def _publication_result(row: Mapping[str, Any], payload_rows: Sequence[Any]) -> 
     models: dict[str, list[dict[str, Any]]] = {}
     for payload_row in payload_rows:
         payload = dict(payload_row["payload"] or {})
+        if (metadata["publication_scope"] == "ticker-opportunity-ranking"
+            and payload_row["model_name"] in {"opportunity_rank", "trade_plan"}):
+            payload["publication_id"] = str(
+                payload_row["canonical_publication_id"] or payload.get("publication_id")
+                or row["publication_id"])
         payload.update({key: value for key, value in metadata.items() if key not in payload})
         models.setdefault(str(payload_row["model_name"]), []).append(payload)
     return {**metadata, "models": models}

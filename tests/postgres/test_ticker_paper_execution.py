@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.domain.decision import (
@@ -315,7 +316,7 @@ def _publish_context(
     with runtime.transaction() as connection:
         connection.execute(
             "UPDATE app.publication SET published_at = %s WHERE id = %s",
-            [as_of, rank_publication],
+            [as_of + timedelta(microseconds=1), rank_publication],
         )
     plan = plan.model_copy(update={"publication_id": str(rank_publication)})
     decision = bind_trade_plan(decision, plan)
@@ -373,16 +374,27 @@ def test_outcome_attribution_publication_is_full_and_replayable(
         }
         with runtime.transaction() as connection:
             row = connection.execute(
-                "SELECT id::text, input_manifest FROM analysis.ticker_decision WHERE decision_revision = %s",
+                "SELECT id::text, evidence_refs FROM analysis.ticker_decision WHERE decision_revision = %s",
                 [decision.decision_revision],
             ).fetchone()
             assert row is not None
-            manifest = dict(row["input_manifest"] or {})
-            manifest.update({"opportunity_rank": rank, "alpha_signals": [{"signal_id": plan.alpha_signal_id}]})
+            refs = dict(row["evidence_refs"] or {})
+            manifest_refs = dict(refs.get("manifest") or {})
+            for component, value in (("opportunity_rank", rank),
+                                     ("alpha_signals", [{"signal_id": plan.alpha_signal_id}])):
+                manifest_refs[component] = connection.execute(
+                    "SELECT analysis.intern_decision_payload(%s::jsonb) AS hash",
+                    [Jsonb(value)],
+                ).fetchone()["hash"]
+            refs["manifest"] = manifest_refs
             connection.execute(
-                "UPDATE analysis.ticker_decision SET input_manifest = %s::jsonb WHERE id = %s::uuid",
-                [json.dumps(manifest, default=str), row["id"]],
+                "UPDATE analysis.ticker_decision SET input_manifest = input_manifest - 'opportunity_rank' - 'alpha_signals', "
+                "evidence_refs = %s::jsonb WHERE id = %s::uuid",
+                [Jsonb(refs), row["id"]],
             )
+            assert connection.execute("SELECT jsonb_typeof(input_manifest->'trade_plan') AS shape "
+                                      "FROM analysis.ticker_decision_read WHERE id = %s::uuid",
+                                      [row["id"]]).fetchone()["shape"] == "object"
             mark_at = observed + timedelta(days=1)
             metadata = {
                 "selected_expression": plan.selected_expression_kind.value,
@@ -627,7 +639,10 @@ def test_portfolio_replay_freezes_sector_when_current_metadata_changes(
         runtime.close()
 
 
-def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migrated_postgres_dsn: str) -> None:
+@pytest.mark.parametrize("legacy_publication", [False, True])
+def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(
+    migrated_postgres_dsn: str, legacy_publication: bool,
+) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
@@ -659,6 +674,22 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migr
         repository = TickerPaperExecutionRepository(runtime, config)
         assert decision.trade_plan is not None
         assert decision.trade_plan.eligibility == "ACTIONABLE", decision.trade_plan.blockers
+        if legacy_publication:
+            with runtime.transaction() as connection:
+                connection.execute("""
+                    INSERT INTO app.publication_item
+                        (publication_id, model_name, stable_key, rank, instrument_id, payload)
+                    SELECT publication.id, item.model_name, item.stable_key, item.rank,
+                           item.instrument_id, payload.payload
+                    FROM app.publication publication
+                    JOIN app.publication_bundle_item item ON item.bundle_id = publication.bundle_id
+                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    WHERE publication.id = %s::uuid
+                """, [decision.trade_plan.publication_id])
+                connection.execute("""
+                    DELETE FROM app.publication_bundle_item
+                    WHERE bundle_id = (SELECT bundle_id FROM app.publication WHERE id = %s::uuid)
+                """, [decision.trade_plan.publication_id])
         result = repository.stage(
             ticker="ACME",
             decision=decision,

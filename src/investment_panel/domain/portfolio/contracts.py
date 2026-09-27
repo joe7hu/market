@@ -852,7 +852,7 @@ def _compute_portfolio_allocation(
         normalized = [item if isinstance(item, PortfolioCandidate) else PortfolioCandidate.model_validate(item) for item in candidates]
         for candidate in normalized:
             if not connection.execute(
-                """SELECT 1 FROM analysis.ticker_decision
+                """SELECT 1 FROM analysis.ticker_decision_read
                    WHERE id::text = %s AND input_hash = %s
                      AND status = 'published' AND published_at IS NOT NULL
                      AND input_manifest->'trade_plan'->>'trade_plan_id' = %s

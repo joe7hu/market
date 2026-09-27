@@ -120,7 +120,7 @@ def research_summary(runtime: DatabaseRuntime, config: AppConfig) -> dict[str, A
                 SELECT DISTINCT ON (decision.instrument_id) decision.id,
                        instrument.symbol AS ticker, position.instrument_id IS NOT NULL AS owned,
                        decision.input_manifest->'opportunity_rank'->>'research_rank' AS research_rank
-                FROM analysis.ticker_decision decision
+                FROM analysis.ticker_decision_read decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
                     AND position.quantity > 0

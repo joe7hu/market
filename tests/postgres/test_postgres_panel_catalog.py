@@ -586,7 +586,7 @@ def test_today_authority_validates_plan_authority_without_returning_full_plan(
 
         with runtime.transaction() as connection:
             manifest = dict(connection.execute(
-                "SELECT input_manifest FROM analysis.ticker_decision "
+                "SELECT input_manifest FROM analysis.ticker_decision_read "
                 "WHERE id = %s::uuid",
                 [published["ticker_decision_id"]],
             ).fetchone()["input_manifest"])
@@ -606,7 +606,9 @@ def test_today_authority_validates_plan_authority_without_returning_full_plan(
                 },
             }
             connection.execute(
-                "UPDATE analysis.ticker_decision SET input_manifest = %s "
+                "UPDATE analysis.ticker_decision SET input_manifest = %s, "
+                "resolution = analysis.expand_decision_resolution(resolution, evidence_refs, input_manifest, opportunity_episode), "
+                "evidence_refs = evidence_refs - 'manifest' - 'resolution_plan_fields' - 'resolution_impact' "
                 "WHERE id = %s::uuid",
                 [Jsonb(null_identity_manifest), published["ticker_decision_id"]],
             )
@@ -711,12 +713,13 @@ def test_today_authority_cursor_keeps_base_and_correction_in_one_snapshot(
             published_ids.append(TickerDecisionRepository(runtime).publish(decision)["ticker_decision_id"])
         with runtime.transaction() as connection:
             manifest = dict(connection.execute(
-                "SELECT input_manifest FROM analysis.ticker_decision WHERE id = %s::uuid",
+                "SELECT input_manifest FROM analysis.ticker_decision_read WHERE id = %s::uuid",
                 [published_ids[1]],
             ).fetchone()["input_manifest"])
             manifest["trade_plan"] = {"present": "before-cursor-mutation"}
             connection.execute(
-                "UPDATE analysis.ticker_decision SET input_manifest = %s WHERE id = %s::uuid",
+                "UPDATE analysis.ticker_decision SET input_manifest = %s, "
+                "evidence_refs = evidence_refs - 'manifest' WHERE id = %s::uuid",
                 [Jsonb(manifest), published_ids[1]],
             )
 
@@ -819,7 +822,8 @@ def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
     assert all("opportunity_rank_position <= 10500" in query for query in queries)
     # Keep the broad candidate scan on compact rows; expand only selected authority rows.
     assert all("FROM analysis.ticker_decision decision" in query for query in queries)
-    assert all(query.count("analysis.ticker_decision_read stored_decision") == 1 for query in queries)
+    assert all(query.count("analysis.ticker_decision_read stored_decision") == 2 for query in queries)
+    assert all("JOIN candidate_keys candidate ON candidate.id = decision.id" in query for query in queries)
     assert all("LEFT JOIN analysis.ticker_decision_read stored_decision" in query for query in queries)
     assert all(
         query.index("FROM analysis.ticker_decision decision")

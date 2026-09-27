@@ -1101,7 +1101,34 @@ def today_authority_pages(
     safe_plan_end = safe_plan_offset + safe_plan_limit
     safe_batch_size = max(1, min(int(batch_size), 100))
     query = f"""
-        WITH current_candidates AS (
+        WITH candidate_keys AS (
+            SELECT decision.id, decision.instrument_id, decision.as_of,
+                   decision.published_at, decision.created_at,
+                   count(*) OVER (
+                       PARTITION BY decision.instrument_id, decision.as_of,
+                                    decision.published_at
+                   ) AS authority_count,
+                   count(*) OVER (
+                       PARTITION BY decision.opportunity_episode_id
+                   ) AS opportunity_authority_count,
+                   row_number() OVER (
+                       PARTITION BY decision.instrument_id
+                       ORDER BY decision.as_of DESC, decision.published_at DESC,
+                                decision.created_at DESC, decision.id DESC
+                   ) AS current_row
+            FROM analysis.ticker_decision decision
+            WHERE decision.status = 'published'
+              AND decision.contract_version = 'ticker-decision.v1'
+              AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
+              AND jsonb_typeof(decision.capital_action) = 'object'
+              AND jsonb_typeof(decision.input_manifest) = 'object'
+              AND decision.as_of <= now()
+              AND decision.published_at IS NOT NULL
+              AND decision.published_at <= now()
+        ), current_candidates AS (
             SELECT decision.id AS decision_id,
                    decision.id::text AS ticker_decision_id,
                    instrument.symbol AS ticker, instrument.symbol,
@@ -1133,30 +1160,16 @@ def today_authority_pages(
                        false
                    ) AS trade_plan_present,
                    decision.created_at,
-                   count(*) OVER (
-                       PARTITION BY decision.instrument_id, decision.as_of,
-                                    decision.published_at
-                   ) AS authority_count,
-                   count(*) OVER (
-                       PARTITION BY decision.opportunity_episode_id
-                   ) AS opportunity_authority_count,
-                   row_number() OVER (
-                       PARTITION BY decision.instrument_id
-                       ORDER BY decision.as_of DESC, decision.published_at DESC,
-                                decision.created_at DESC, decision.id DESC
-                   ) AS current_row
-            FROM analysis.ticker_decision decision
+                   candidate.authority_count,
+                   candidate.opportunity_authority_count,
+                   candidate.current_row
+            FROM analysis.ticker_decision_read decision
+            JOIN candidate_keys candidate ON candidate.id = decision.id
             JOIN catalog.instrument instrument
               ON instrument.id = decision.instrument_id
-            WHERE decision.status = 'published'
-              AND decision.contract_version = 'ticker-decision.v1'
-              AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
-              AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
-              AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
-              AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
-              AND decision.as_of <= now()
-              AND decision.published_at IS NOT NULL
-              AND decision.published_at <= now()
+            WHERE candidate.current_row = 1
+              AND candidate.authority_count = 1
+              AND candidate.opportunity_authority_count = 1
               AND jsonb_typeof(decision.capital_action) = 'object'
               AND jsonb_typeof(decision.input_manifest) = 'object'
         ), current_authority AS (
@@ -1386,7 +1399,7 @@ def today_authority_pages(
                        )
                    ) AS needs_missing_plan_validation
             FROM positioned_actions
-            LEFT JOIN analysis.ticker_decision stored_decision
+            LEFT JOIN analysis.ticker_decision_read stored_decision
               ON stored_decision.id = positioned_actions.decision_id
             CROSS JOIN LATERAL (
                 SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan

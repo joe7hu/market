@@ -4,7 +4,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import gzip
+from hashlib import sha256
 import json
+from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -14,13 +16,17 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.infrastructure.postgres.decision_inputs import compact_input_batch
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.hot_retention import HotRetention
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
 from investment_panel.infrastructure.postgres.row_archive import RowArchive, MAX_PACK_BYTES
+from investment_panel.infrastructure.postgres.option_evidence_archive import OptionEvidenceArchive
 from investment_panel.infrastructure.postgres.archive_io import MAX_CHUNK_BYTES
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
+from investment_panel.domain.decision import build_ticker_decision
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 
 
 @pytest.fixture
@@ -48,6 +54,34 @@ def _decision(runtime, revision, manifest):
             VALUES (%s, %s, 'test', now(), %s, 'test', 'test', '{}', '{}', '{}', '{}', %s::jsonb)
             RETURNING id
         """, [instrument_id, revision, "a" * 64, manifest]).fetchone()["id"]
+
+
+def test_application_role_can_intern_decision_and_write_accounting(storage):
+    assert storage.account(record=True)["sample_count"] == 1
+    with storage.runtime.transaction() as connection:
+        reconcile_instrument(connection, "APPROLE")
+    at = datetime(2026, 9, 25, 14, tzinfo=UTC)
+    decision = build_ticker_decision("APPROLE", {"quotes": [{
+        "symbol": "APPROLE", "price": 100, "observed_at": at - timedelta(minutes=1),
+        "available_at": at - timedelta(minutes=1), "confirmed": True,
+    }]}, as_of=at)
+    assert TickerDecisionRepository(storage.runtime).publish(decision)["status"] == "published"
+
+
+def test_storage_forecast_keeps_fallback_until_three_distinct_days(storage):
+    today = datetime.now(UTC).date()
+    with storage.runtime.transaction() as connection:
+        for day in (today - timedelta(days=1), today):
+            connection.execute("""
+                INSERT INTO ops.storage_daily_accounting
+                  (sample_day, sampled_at, database_bytes, volume_free_bytes,
+                   logical_evidence_bytes, archived_bytes, archive_rows)
+                VALUES (%s, now(), 1000, %s, 100, 0, 0)
+            """, [day, 100 * 1024**3])
+    forecast = storage.account()
+    assert forecast["sample_count"] == 2
+    assert forecast["forecast_confidence"] == "provisional"
+    assert forecast["forecast_30d_free_bytes"] <= 79 * 1024**3
 
 
 def test_input_normalization_lossless_precision_sharing_and_restart(storage):
@@ -99,7 +133,7 @@ def test_row_packs_restore_original_typed_rows_and_batch_metadata(storage):
         assert RowArchive(storage).write(connection, "analysis.ticker_decision", records) == packs
 
 
-def _quotes(storage, *, count=3, old_days=20, profile="radar"):
+def _quotes(storage, *, count=3, old_days=40, profile="radar"):
     now = datetime(2026, 9, 24, 12, tzinfo=UTC)
     repo = IngestionRepository(storage.runtime)
     repo.register_source("hot-test", name="Hot test", family="test", kind="option_chain")
@@ -116,6 +150,653 @@ def _quotes(storage, *, count=3, old_days=20, profile="radar"):
         # Exercise real provider payloads independent of ingestion's packing policy.
         connection.execute("UPDATE raw.option_quote SET provider_payload = %s", [Jsonb({"raw": "x" * 2000, "precise": "unchanged"})])
     return now
+
+
+def _completed_option_scan(storage, *, count=1):
+    now = _quotes(storage, count=count, old_days=40)
+    with storage.runtime.transaction() as connection:
+        quote = connection.execute("""
+            SELECT q.snapshot_id, q.contract_id, q.observed_at, instrument.id AS instrument_id
+            FROM raw.option_quote q JOIN catalog.option_contract contract ON contract.id = q.contract_id
+            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+            ORDER BY q.observed_at LIMIT 1
+        """).fetchone()
+        old_run = connection.execute("""
+            INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash, started_at, status)
+            VALUES ('option-evidence-fixture', %s, 'fixture', %s, %s, 'succeeded') RETURNING id
+        """, [quote["observed_at"], "a" * 64, quote["observed_at"]]).fetchone()["id"]
+        newer_run = connection.execute("""
+            INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash, started_at, status)
+            VALUES ('option-evidence-fixture', %s, 'fixture', %s, %s, 'succeeded') RETURNING id
+        """, [now, "b" * 64, now]).fetchone()["id"]
+        decision_id = connection.execute("""
+            INSERT INTO analysis.decision
+              (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+            VALUES (%s, 'old-option', 'option', %s, %s, 'REJECT', %s) RETURNING id
+        """, [old_run, quote["instrument_id"], quote["observed_at"], "c" * 64]).fetchone()["id"]
+        connection.execute("""
+            INSERT INTO analysis.option_decision
+              (decision_id, contract_id, snapshot_id, quote_observed_at, paper_state, details)
+            VALUES (%s, %s, %s, %s, 'REJECT', %s)
+        """, [decision_id, quote["contract_id"], quote["snapshot_id"],
+              quote["observed_at"], '{"exact":0.12345678901234567890123456789,"raw":"中文",'
+              '"historical_paths":{"lower_95_expected_value":0.12345678901234567890123456789,'
+              '"scenario_count":17,"paths":[1,2,3]},"calibration":{"sample_size":17},'
+              '"quote_package":{"max_quote_age_seconds":12,"liquidity":{"spread":0.1}},'
+              '"thesis":{"invalidation":"price"},"probability_semantics":"calibrated"}'])
+        connection.execute("""
+            INSERT INTO analysis.decision_evidence
+              (decision_id, evidence_kind, reference_key, detail)
+            VALUES (%s, 'quote', 'source-v1', %s)
+        """, [decision_id, '{"revision":2,"exact":0.12345678901234567890123456789}'])
+        new_quote = connection.execute("""
+            SELECT q.snapshot_id, q.contract_id, q.observed_at
+            FROM raw.option_quote q JOIN catalog.option_contract contract ON contract.id = q.contract_id
+            WHERE contract.underlying_instrument_id = %s
+            ORDER BY q.observed_at DESC LIMIT 1
+        """, [quote["instrument_id"]]).fetchone()
+        successor_id = connection.execute("""
+            INSERT INTO analysis.decision
+              (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+            VALUES (%s, 'new-option', 'option', %s, %s, 'REJECT', %s) RETURNING id
+        """, [newer_run, quote["instrument_id"], now, "d" * 64]).fetchone()["id"]
+        connection.execute("""
+            INSERT INTO analysis.option_decision
+              (decision_id, contract_id, snapshot_id, quote_observed_at, paper_state, details)
+            VALUES (%s, %s, %s, %s, 'REJECT', '{}'::jsonb)
+        """, [successor_id, new_quote["contract_id"], new_quote["snapshot_id"],
+              new_quote["observed_at"]])
+    return now, decision_id
+
+
+def _verified_backup(storage):
+    root = storage.archive_root.parent.parent / "postgres-backups"
+    root.mkdir(parents=True, exist_ok=True)
+    dump = root / "fixture.dump"
+    dump.write_bytes(b"verified backup fixture")
+    token = sha256(dump.read_bytes()).hexdigest()
+    (root / "fixture.json").write_text(json.dumps({"status": "verified", "sha256": token,
+                                                  "dump_path": str(dump),
+                                                  "created_at": datetime.now(UTC).isoformat(),
+                                                  "format": "postgresql-custom"}))
+    return token
+
+
+def test_completed_option_scan_archives_dependencies_and_restores_typed_rows(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    archive = OptionEvidenceArchive(storage)
+    assert archive.run(now=now)["eligible"] == 1
+    assert not storage.archive_root.exists()
+    with pytest.raises(ValueError, match="backup"):
+        archive.run(now=now, execute=True)
+    with storage.runtime.read() as connection:
+        before = connection.execute("SELECT to_jsonb(scan)::text AS row_json FROM analysis.option_decision scan WHERE decision_id = %s", [decision_id]).fetchone()["row_json"]
+    token = _verified_backup(storage)
+    backup_receipt = storage.archive_root.parent.parent / "postgres-backups" / "fixture.json"
+    backup = json.loads(backup_receipt.read_text())
+    backup_receipt.write_text(json.dumps({**backup, "created_at": (datetime.now(UTC) - timedelta(days=2)).isoformat()}))
+    with pytest.raises(ValueError, match="fresh"):
+        archive.run(now=now, execute=True, backup_token=token)
+    backup_receipt.write_text(json.dumps(backup))
+    result = archive.run(now=now, execute=True, backup_token=token)
+    assert result["archived"] == 1
+    with pytest.raises(psycopg.errors.RaiseException, match="requires local evidence"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("""
+                INSERT INTO app.paper_order (decision_id, instrument_id, side, quantity, status)
+                SELECT decision.id, decision.instrument_id, 'buy', 1, 'open'
+                FROM analysis.decision decision WHERE decision.id = %s
+            """, [decision_id])
+    with pytest.raises(psycopg.errors.RaiseException, match="requires local evidence"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("""
+                INSERT INTO analysis.agent_task (decision_id, task_kind, status, request)
+                VALUES (%s, 'review', 'running', '{}'::jsonb)
+            """, [decision_id])
+    with pytest.raises(psycopg.errors.RaiseException, match="requires local evidence"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("INSERT INTO analysis.shadow_trade (decision_id, status) VALUES (%s, 'pending')",
+                               [decision_id])
+    with pytest.raises(psycopg.errors.RaiseException, match="requires local scan evidence"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("""
+                INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+                SELECT 'options-radar', run_id, 'published', now()
+                FROM analysis.decision WHERE id = %s
+            """, [decision_id])
+    with pytest.raises(psycopg.errors.RaiseException, match="requires local scan evidence"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("""
+                INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+                SELECT 'options-decision-system', run_id, 'published', now()
+                FROM analysis.decision WHERE id = %s
+            """, [decision_id])
+    with storage.runtime.transaction() as connection:
+        publication_id = connection.execute("""
+            INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+            SELECT 'today', run_id, 'published', now()
+            FROM analysis.decision WHERE id = %s RETURNING id
+        """, [decision_id]).fetchone()["id"]
+    with pytest.raises(psycopg.errors.RaiseException, match="requires local scan evidence"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("UPDATE app.publication SET scope = 'options-decision-system' WHERE id = %s",
+                               [publication_id])
+    with pytest.raises(psycopg.errors.RaiseException, match="requires local primary scan evidence"):
+        with storage.runtime.transaction() as connection:
+            successor = connection.execute("""
+                SELECT newer.id FROM analysis.decision older
+                JOIN analysis.decision newer ON newer.instrument_id = older.instrument_id
+                  AND newer.id <> older.id AND newer.as_of > older.as_of
+                WHERE older.id = %s LIMIT 1
+            """, [decision_id]).fetchone()["id"]
+            connection.execute("UPDATE analysis.option_decision SET primary_decision_id = %s WHERE decision_id = %s",
+                               [decision_id, successor])
+    with storage.runtime.read() as connection:
+        row = connection.execute("SELECT details, evidence_state, evidence_archive_manifest_id FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()
+        assert row["details"]["evidence_state"] == "archived"
+        assert row["details"]["archive_manifest_id"] == result["manifest_id"]
+        exact = connection.execute(
+            "SELECT details #>> '{historical_paths,lower_95_expected_value}' AS value "
+            "FROM analysis.option_decision WHERE decision_id = %s", [decision_id],
+        ).fetchone()["value"]
+        assert exact == "0.12345678901234567890123456789"
+        assert row["details"]["historical_paths"]["scenario_count"] == 17
+        assert "paths" not in row["details"]["historical_paths"]
+        assert row["details"]["calibration"] == {"sample_size": 17}
+        assert row["details"]["quote_package"]["liquidity"] == {"spread": 0.1}
+        assert row["details"]["thesis"] == {"invalidation": "price"}
+        assert "raw" not in row["details"]
+        assert row["evidence_state"] == "archived"
+        assert row["evidence_archive_manifest_id"] == result["manifest_id"]
+        evidence = connection.execute("SELECT detail FROM analysis.decision_evidence WHERE decision_id = %s", [decision_id]).fetchone()
+        assert evidence["detail"]["evidence_state"] == "archived"
+    with pytest.raises(psycopg.errors.RaiseException, match="archived option evidence is immutable"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.option_decision SET details = '{}'::jsonb WHERE decision_id = %s",
+                               [decision_id])
+    with pytest.raises(psycopg.errors.RaiseException, match="archived option evidence is immutable"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.decision_evidence SET detail = '{}'::jsonb WHERE decision_id = %s",
+                               [decision_id])
+    offline = storage.archive_root.with_name(storage.archive_root.name + "-offline")
+    storage.archive_root.rename(offline)
+    try:
+        detail = AnalysisRepository(storage.runtime).option_signal_detail(decision_id)
+        assert detail["evidence_state"] == "archived"
+        assert detail["details"]["archive_manifest_id"] == result["manifest_id"]
+    finally:
+        offline.rename(storage.archive_root)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("ALTER TABLE analysis.decision_evidence DISABLE TRIGGER archived_decision_evidence_immutable")
+        connection.execute("ALTER TABLE analysis.option_decision DISABLE TRIGGER archived_option_decision_immutable")
+        connection.execute("DELETE FROM analysis.decision_evidence WHERE decision_id = %s", [decision_id])
+        connection.execute("DELETE FROM analysis.option_decision WHERE decision_id = %s", [decision_id])
+        connection.execute("DELETE FROM analysis.decision WHERE id = %s", [decision_id])
+        connection.execute("ALTER TABLE analysis.decision_evidence ENABLE TRIGGER archived_decision_evidence_immutable")
+        connection.execute("ALTER TABLE analysis.option_decision ENABLE TRIGGER archived_option_decision_immutable")
+    receipt = archive.restore_scan(decision_id, manifest_id=result["manifest_id"],
+                                   destination_dsn=migrated_postgres_dsn)
+    assert receipt["typed_rows"]["analysis.option_decision"] == 1
+    with psycopg.connect(migrated_postgres_dsn, row_factory=psycopg.rows.dict_row) as connection:
+        restored = connection.execute(f"SELECT to_jsonb(scan)::text AS row_json FROM {receipt['staging_schema']}.analysis_option_decision scan").fetchone()["row_json"]
+        assert restored == before
+
+
+def test_option_scan_archive_covers_every_synthetic_leg_quote(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage, count=2)
+    with storage.runtime.transaction() as connection:
+        leg = connection.execute("""
+            SELECT q.contract_id FROM raw.option_quote q
+            JOIN analysis.option_decision scan ON scan.snapshot_id = q.snapshot_id
+              AND scan.quote_observed_at = q.observed_at
+            WHERE scan.decision_id = %s AND q.contract_id <> scan.contract_id
+        """, [decision_id]).fetchone()["contract_id"]
+        connection.execute(
+            "UPDATE analysis.option_decision SET synthetic_legs = %s WHERE decision_id = %s",
+            [Jsonb([{"contract_id": leg}]), decision_id],
+        )
+        scan = connection.execute("""
+            SELECT decision.run_id, scan.snapshot_id, scan.quote_observed_at,
+                   scan.contract_id FROM analysis.option_decision scan
+            JOIN analysis.decision decision ON decision.id = scan.decision_id
+            WHERE scan.decision_id = %s
+        """, [decision_id]).fetchone()
+        for contract_id in (scan["contract_id"], leg):
+            connection.execute("""
+                INSERT INTO analysis.option_feature
+                  (run_id, snapshot_id, contract_id, quote_observed_at, feature_version)
+                VALUES (%s, %s, %s, %s, 'archive-test')
+            """, [scan["run_id"], scan["snapshot_id"], contract_id,
+                  scan["quote_observed_at"]])
+    archive = OptionEvidenceArchive(storage)
+    result = archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    restored = archive.restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    assert restored["typed_rows"]["raw.option_quote"] == 2
+    assert restored["typed_rows"]["catalog.option_contract"] == 2
+    assert restored["typed_rows"]["analysis.option_feature"] == 2
+
+
+def test_hot_retention_pins_local_synthetic_leg_quote(storage):
+    now, decision_id = _completed_option_scan(storage, count=2)
+    with storage.runtime.transaction() as connection:
+        leg = connection.execute("""
+            SELECT q.snapshot_id, q.contract_id, q.observed_at FROM raw.option_quote q
+            JOIN analysis.option_decision scan ON scan.snapshot_id = q.snapshot_id
+              AND scan.quote_observed_at = q.observed_at
+            WHERE scan.decision_id = %s AND q.contract_id <> scan.contract_id
+        """, [decision_id]).fetchone()
+        connection.execute("UPDATE analysis.option_decision SET synthetic_legs = %s WHERE decision_id = %s",
+                           [Jsonb([{"contract_id": leg["contract_id"]}]), decision_id])
+    HotRetention(storage).run(phase="options", now=now, execute=True, max_batches=4)
+    with storage.runtime.read() as connection:
+        quote = connection.execute("""
+            SELECT provider_payload FROM raw.option_quote
+            WHERE snapshot_id = %s AND contract_id = %s AND observed_at = %s
+        """, [leg["snapshot_id"], leg["contract_id"], leg["observed_at"]]).fetchone()
+        assert quote is not None and quote["provider_payload"]["precise"] == "unchanged"
+
+
+def test_option_scan_with_unsupported_link_stays_local_without_stalling(storage):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        successor = connection.execute("""
+            SELECT newer.id FROM analysis.decision older
+            JOIN analysis.decision newer ON newer.instrument_id = older.instrument_id
+              AND newer.id <> older.id WHERE older.id = %s LIMIT 1
+        """, [decision_id]).fetchone()["id"]
+        connection.execute("UPDATE analysis.option_decision SET primary_decision_id = %s WHERE decision_id = %s",
+                           [successor, decision_id])
+    assert OptionEvidenceArchive(storage).run(now=now)["status"] == "pass_complete"
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s",
+                                  [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_option_scan_referenced_by_newer_local_scan_stays_local(storage):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        successor = connection.execute("""
+            SELECT newer.id FROM analysis.decision older
+            JOIN analysis.decision newer ON newer.instrument_id = older.instrument_id
+              AND newer.id <> older.id AND newer.as_of > older.as_of
+            WHERE older.id = %s LIMIT 1
+        """, [decision_id]).fetchone()["id"]
+        connection.execute("UPDATE analysis.option_decision SET primary_decision_id = %s WHERE decision_id = %s",
+                           [decision_id, successor])
+    assert OptionEvidenceArchive(storage).run(now=now)["status"] == "pass_complete"
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s",
+                                  [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_option_scan_missing_synthetic_leg_quote_prevents_compaction(storage):
+    now, decision_id = _completed_option_scan(storage, count=2)
+    with storage.runtime.transaction() as connection:
+        leg = connection.execute("""
+            SELECT q.snapshot_id, q.contract_id, q.observed_at FROM raw.option_quote q
+            JOIN analysis.option_decision scan ON scan.snapshot_id = q.snapshot_id
+              AND scan.quote_observed_at = q.observed_at
+            WHERE scan.decision_id = %s AND q.contract_id <> scan.contract_id
+        """, [decision_id]).fetchone()
+        connection.execute(
+            "UPDATE analysis.option_decision SET synthetic_legs = %s WHERE decision_id = %s",
+            [Jsonb([{"contract_id": leg["contract_id"]}]), decision_id],
+        )
+        connection.execute(
+            "DELETE FROM raw.option_quote WHERE snapshot_id = %s AND contract_id = %s AND observed_at = %s",
+            [leg["snapshot_id"], leg["contract_id"], leg["observed_at"]],
+        )
+    skipped = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                  backup_token=_verified_backup(storage))
+    assert skipped["archived"] == 0 and skipped["skipped"] == [str(decision_id)]
+    with storage.runtime.read() as connection:
+        assert connection.execute(
+            "SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]
+        ).fetchone()["evidence_state"] == "local"
+
+
+def test_option_scan_archive_restores_capture_source_parents(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        snapshot = connection.execute("""
+            SELECT snapshot.id, snapshot.ingest_run_id FROM raw.option_snapshot snapshot
+            JOIN analysis.option_decision scan ON scan.snapshot_id = snapshot.id
+            WHERE scan.decision_id = %s
+        """, [decision_id]).fetchone()
+        payload_id = connection.execute("""
+            INSERT INTO ingest.payload (run_id, archive_uri, sha256, encoding, byte_count)
+            VALUES (%s, 'fixture://capture', %s, 'json', 1) RETURNING id
+        """, [snapshot["ingest_run_id"], "a" * 64]).fetchone()["id"]
+        generation_id = connection.execute("""
+            INSERT INTO raw.option_capture_generation
+              (snapshot_id, ingest_run_id, generation, capture_state)
+            VALUES (%s, %s, 1, 'complete') RETURNING id
+        """, [snapshot["id"], snapshot["ingest_run_id"]]).fetchone()["id"]
+        connection.execute("""
+            UPDATE raw.option_snapshot SET payload_id = %s,
+              latest_complete_generation_id = %s WHERE id = %s
+        """, [payload_id, generation_id, snapshot["id"]])
+        connection.execute("""
+            UPDATE raw.option_quote SET capture_generation_id = %s WHERE snapshot_id = %s
+        """, [generation_id, snapshot["id"]])
+    archive = OptionEvidenceArchive(storage)
+    archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    receipt = archive.restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    for relation in ("ingest.source", "ingest.run", "ingest.payload",
+                     "raw.option_capture_generation"):
+        assert receipt["typed_rows"][relation] == 1
+
+
+def test_option_scan_archive_restores_strategy_revision_chain(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        hypothesis = connection.execute("""
+            INSERT INTO analysis.hypothesis
+              (hypothesis_key, statement, mechanism_class, falsification, input_hash)
+            VALUES ('archive-test', 'test', 'test', 'test', %s) RETURNING id
+        """, ["a" * 64]).fetchone()["id"]
+        family = connection.execute("""
+            INSERT INTO analysis.experiment_family
+              (hypothesis_id, family_key, name, input_hash)
+            VALUES (%s, 'archive-test', 'test', %s) RETURNING id
+        """, [hypothesis, "b" * 64]).fetchone()["id"]
+        old_revision = connection.execute("""
+            INSERT INTO analysis.strategy_revision
+              (strategy_key, revision, name, status, parameters, authority_group)
+            VALUES ('archive-test', 1, 'test', 'candidate', '{}'::jsonb, 'archive-test')
+            RETURNING id
+        """).fetchone()["id"]
+        revision = connection.execute("""
+            INSERT INTO analysis.strategy_revision
+              (strategy_key, revision, name, status, parameters, authority_group,
+               supersedes_id, hypothesis_id, experiment_family_id)
+            VALUES ('archive-test', 2, 'test', 'candidate', '{}'::jsonb, 'archive-test',
+                    %s, %s, %s) RETURNING id
+        """, [old_revision, hypothesis, family]).fetchone()["id"]
+        connection.execute("""
+            UPDATE analysis.run SET strategy_revision_id = %s
+            WHERE id = (SELECT run_id FROM analysis.decision WHERE id = %s)
+        """, [revision, decision_id])
+        connection.execute("UPDATE analysis.decision SET strategy_revision_id = %s WHERE id = %s",
+                           [revision, decision_id])
+    archive = OptionEvidenceArchive(storage)
+    archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    receipt = archive.restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    assert receipt["typed_rows"]["analysis.strategy_revision"] == 2
+    assert receipt["typed_rows"]["analysis.hypothesis"] == 1
+    assert receipt["typed_rows"]["analysis.experiment_family"] == 1
+
+
+def test_option_feature_missing_source_quote_prevents_compaction(storage):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        scan = connection.execute("""
+            SELECT decision.run_id, scan.snapshot_id, scan.contract_id,
+                   scan.quote_observed_at FROM analysis.option_decision scan
+            JOIN analysis.decision decision ON decision.id = scan.decision_id
+            WHERE scan.decision_id = %s
+        """, [decision_id]).fetchone()
+        connection.execute("""
+            INSERT INTO analysis.option_feature
+              (run_id, snapshot_id, contract_id, quote_observed_at, feature_version)
+            VALUES (%s, %s, %s, %s, 'archive-test')
+        """, [scan["run_id"], scan["snapshot_id"], scan["contract_id"],
+              scan["quote_observed_at"] + timedelta(minutes=1)])
+    skipped = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                  backup_token=_verified_backup(storage))
+    assert skipped["archived"] == 0 and skipped["skipped"] == [str(decision_id)]
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s",
+                                  [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_incomplete_option_scan_does_not_block_later_completed_scan(storage):
+    now, broken_id = _completed_option_scan(storage, count=2)
+    with storage.runtime.transaction() as connection:
+        broken = connection.execute("""
+            SELECT decision.run_id, decision.instrument_id, scan.snapshot_id,
+                   scan.contract_id, scan.quote_observed_at
+            FROM analysis.decision decision
+            JOIN analysis.option_decision scan ON scan.decision_id = decision.id
+            WHERE decision.id = %s
+        """, [broken_id]).fetchone()
+        other = connection.execute("""
+            SELECT contract_id FROM raw.option_quote
+            WHERE snapshot_id = %s AND observed_at = %s AND contract_id <> %s
+        """, [broken["snapshot_id"], broken["quote_observed_at"],
+              broken["contract_id"]]).fetchone()["contract_id"]
+        healthy_id = connection.execute("""
+            INSERT INTO analysis.decision
+              (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+            VALUES (%s, 'old-option-second', 'option', %s, %s, 'REJECT', %s) RETURNING id
+        """, [broken["run_id"], broken["instrument_id"], broken["quote_observed_at"],
+              "e" * 64]).fetchone()["id"]
+        connection.execute("""
+            INSERT INTO analysis.option_decision
+              (decision_id, contract_id, snapshot_id, quote_observed_at, paper_state, details)
+            VALUES (%s, %s, %s, %s, 'REJECT', '{}'::jsonb)
+        """, [healthy_id, other, broken["snapshot_id"], broken["quote_observed_at"]])
+        another_id = connection.execute("""
+            INSERT INTO analysis.decision
+              (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+            VALUES (%s, 'old-option-third', 'option', %s, %s, 'REJECT', %s) RETURNING id
+        """, [broken["run_id"], broken["instrument_id"], broken["quote_observed_at"],
+              "f" * 64]).fetchone()["id"]
+        connection.execute("""
+            INSERT INTO analysis.option_decision
+              (decision_id, contract_id, snapshot_id, quote_observed_at, paper_state, details)
+            VALUES (%s, %s, %s, %s, 'REJECT', '{}'::jsonb)
+        """, [another_id, other, broken["snapshot_id"], broken["quote_observed_at"]])
+        ingest_run_id = connection.execute(
+            "SELECT ingest_run_id FROM raw.option_snapshot WHERE id = %s",
+            [broken["snapshot_id"]],
+        ).fetchone()["ingest_run_id"]
+        generation = connection.execute("""
+            INSERT INTO raw.option_capture_generation
+              (snapshot_id, ingest_run_id, generation, capture_state)
+            VALUES (%s, %s, 1, 'complete') RETURNING id
+        """, [broken["snapshot_id"], ingest_run_id]).fetchone()["id"]
+        relative_run = connection.execute("""
+            INSERT INTO analysis.run
+              (run_type, input_cutoff, code_version, input_hash, started_at, status)
+            VALUES ('option-relative-archive-fixture', %s, 'fixture', %s, %s, 'succeeded')
+            RETURNING id
+        """, [broken["quote_observed_at"], "1" * 64,
+              broken["quote_observed_at"]]).fetchone()["id"]
+        relative = connection.execute("""
+            INSERT INTO analysis.option_relative_value
+              (analysis_run_id, capture_generation_id, contract_id,
+               model_revision, classification, quality_status)
+            VALUES (%s, %s, %s, 'fixture', 'rejected', 'available') RETURNING id
+        """, [relative_run, generation, other]).fetchone()["id"]
+        connection.execute("UPDATE analysis.option_decision SET relative_value_id = %s WHERE decision_id = %s",
+                           [relative, healthy_id])
+        connection.execute("UPDATE analysis.decision SET as_of = as_of - interval '1 second' WHERE id = %s",
+                           [broken_id])
+        connection.execute("""
+            DELETE FROM raw.option_quote WHERE snapshot_id = %s AND contract_id = %s
+              AND observed_at = %s
+        """, [broken["snapshot_id"], broken["contract_id"], broken["quote_observed_at"]])
+    result = OptionEvidenceArchive(storage).run(
+        now=now, batch_size=3, execute=True, backup_token=_verified_backup(storage))
+    assert result["archived"] == 2
+    assert result["skipped"] == [str(broken_id)]
+    with storage.runtime.read() as connection:
+        states = {str(row["decision_id"]): row["evidence_state"] for row in connection.execute(
+            "SELECT decision_id, evidence_state FROM analysis.option_decision WHERE decision_id = ANY(%s)",
+            [[broken_id, healthy_id, another_id]],
+        ).fetchall()}
+    assert states == {str(broken_id): "local", str(healthy_id): "archived",
+                      str(another_id): "archived"}
+
+
+def test_option_archive_restores_relative_value_verification(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        scan = connection.execute("""
+            SELECT decision.run_id, scan.snapshot_id, scan.contract_id,
+                   snapshot.ingest_run_id FROM analysis.option_decision scan
+            JOIN analysis.decision decision ON decision.id = scan.decision_id
+            JOIN raw.option_snapshot snapshot ON snapshot.id = scan.snapshot_id
+            WHERE scan.decision_id = %s
+        """, [decision_id]).fetchone()
+        generation = connection.execute("""
+            INSERT INTO raw.option_capture_generation
+              (snapshot_id, ingest_run_id, generation, capture_state)
+            VALUES (%s, %s, 1, 'complete') RETURNING id
+        """, [scan["snapshot_id"], scan["ingest_run_id"]]).fetchone()["id"]
+        relative = connection.execute("""
+            INSERT INTO analysis.option_relative_value
+              (analysis_run_id, capture_generation_id, contract_id,
+               model_revision, classification, quality_status)
+            VALUES (%s, %s, %s, 'archive-test', 'rejected', 'available') RETURNING id
+        """, [scan["run_id"], generation, scan["contract_id"]]).fetchone()["id"]
+        connection.execute("""
+            INSERT INTO analysis.option_relative_value_verification
+              (relative_value_id, status, blockers, evidence)
+            VALUES (%s, 'rejected', ARRAY['fixture'], '{"exact":0.12345678901234567890123456789}'::jsonb)
+        """, [relative])
+        connection.execute("UPDATE analysis.option_decision SET relative_value_id = %s WHERE decision_id = %s",
+                           [relative, decision_id])
+    archive = OptionEvidenceArchive(storage)
+    archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    receipt = archive.restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    assert receipt["typed_rows"]["analysis.option_relative_value_verification"] == 1
+
+
+def test_option_scan_missing_quote_prevents_compaction(storage):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        connection.execute("DELETE FROM raw.option_quote WHERE observed_at < %s", [now - timedelta(days=30)])
+    skipped = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                  backup_token=_verified_backup(storage))
+    assert skipped["archived"] == 0 and skipped["skipped"] == [str(decision_id)]
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_option_scan_needs_completed_successor_for_same_instrument(storage):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        other_id = connection.execute("""
+            INSERT INTO catalog.instrument (symbol, name, asset_class)
+            VALUES ('OTHERSCAN', 'Other scan', 'equity') RETURNING id
+        """).fetchone()["id"]
+        connection.execute("UPDATE analysis.decision SET instrument_id = %s WHERE decision_key = 'new-option'",
+                           [other_id])
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                 backup_token=_verified_backup(storage))
+    assert result["archived"] == 0
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s",
+                                  [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_active_shadow_reference_keeps_option_scan_local(storage):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        connection.execute("INSERT INTO analysis.shadow_trade (decision_id, status) VALUES (%s, 'pending')",
+                           [decision_id])
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                 backup_token=_verified_backup(storage))
+    assert result["archived"] == 0
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s",
+                                  [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_active_paper_reference_keeps_old_option_scan_local(storage):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        connection.execute("""
+            INSERT INTO app.paper_order (decision_id, instrument_id, side, quantity, status)
+            SELECT decision.id, decision.instrument_id, 'buy', 1, 'open'
+            FROM analysis.decision decision WHERE decision.id = %s
+        """, [decision_id])
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                 backup_token=_verified_backup(storage))
+    assert result["archived"] == 0
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_option_archive_interruption_keeps_source(storage, monkeypatch):
+    now, decision_id = _completed_option_scan(storage)
+    archive = OptionEvidenceArchive(storage)
+    monkeypatch.setattr(archive, "_checkpoint", Mock(side_effect=RuntimeError("commit interrupted")))
+    with pytest.raises(RuntimeError, match="commit interrupted"):
+        archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_option_archive_corrupt_dependency_keeps_source(storage, monkeypatch):
+    now, decision_id = _completed_option_scan(storage)
+    archive = OptionEvidenceArchive(storage)
+    write = archive._write_dependencies
+
+    def corrupt(connection, rows):
+        packs = write(connection, rows)
+        manifest = connection.execute("SELECT nas_uri FROM ops.storage_archive_manifest WHERE id = %s",
+                                      [packs["analysis.option_decision"][0]]).fetchone()
+        Path(manifest["nas_uri"]).write_bytes(b"corrupt")
+        return packs
+
+    monkeypatch.setattr(archive, "_write_dependencies", corrupt)
+    with pytest.raises(ValueError, match="corrupt"):
+        archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_concurrent_option_paper_reference_prevents_compaction(storage):
+    now, decision_id = _completed_option_scan(storage)
+    token = _verified_backup(storage)
+    inserted, commit = Event(), Event()
+
+    def add_order():
+        with storage.runtime.transaction() as connection:
+            connection.execute("""
+                INSERT INTO app.paper_order (decision_id, instrument_id, side, quantity, status)
+                SELECT decision.id, decision.instrument_id, 'buy', 1, 'open'
+                FROM analysis.decision decision WHERE decision.id = %s
+            """, [decision_id])
+            inserted.set()
+            assert commit.wait(10)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(add_order)
+        assert inserted.wait(5)
+        archiver = executor.submit(OptionEvidenceArchive(storage).run,
+                                   now=now, execute=True, backup_token=token)
+        try:
+            assert archiver.result(timeout=5)["archived"] == 0
+        finally:
+            commit.set()
+        writer.result(timeout=5)
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_large_option_detail_restores_from_typed_copy(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        raw = '{"raw":"' + "中" * (3 * 1024**2) + '","exact":0.12345678901234567890123456789}'
+        connection.execute("UPDATE analysis.option_decision SET details = %s::jsonb WHERE decision_id = %s",
+                           [raw, decision_id])
+        before = connection.execute("SELECT to_jsonb(scan)::text AS row_json FROM analysis.option_decision scan WHERE decision_id = %s",
+                                    [decision_id]).fetchone()["row_json"]
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                 backup_token=_verified_backup(storage))
+    with storage.runtime.read() as connection:
+        pack_id = connection.execute("SELECT (metadata->'dependency_manifests'->'analysis.option_decision'->>0)::bigint AS id FROM ops.storage_archive_manifest WHERE id = %s",
+                                     [result["manifest_id"]]).fetchone()["id"]
+        assert connection.execute("SELECT format FROM ops.storage_archive_manifest WHERE id = %s", [pack_id]).fetchone()["format"] == "postgres-copy-text-gzip.v1"
+    receipt = OptionEvidenceArchive(storage).restore_scan(
+        decision_id, destination_dsn=migrated_postgres_dsn)
+    with psycopg.connect(migrated_postgres_dsn, row_factory=psycopg.rows.dict_row) as connection:
+        restored = connection.execute(f"SELECT to_jsonb(scan)::text AS row_json FROM {receipt['staging_schema']}.analysis_option_decision scan").fetchone()["row_json"]
+        assert restored == before
 
 
 def test_payload_retention_does_not_rebuild_paper_option_marks(storage):
@@ -224,7 +905,6 @@ def test_corrupt_pack_is_not_reused(storage):
         ids = RowArchive(storage).write(connection, "analysis.ticker_decision", records)
     with storage.runtime.read() as connection:
         path = connection.execute("SELECT nas_uri FROM ops.storage_archive_manifest WHERE id = %s", [ids[0]]).fetchone()["nas_uri"]
-    from pathlib import Path
     Path(path).write_bytes(b"corrupt")
     with pytest.raises(ValueError), storage.runtime.transaction() as connection:
         RowArchive(storage).write(connection, "analysis.ticker_decision", records)
@@ -278,7 +958,8 @@ def test_health_distinguishes_actual_database_volume_from_working_directory(stor
     health = storage.health()
     assert health["database_volume"]["status"] == "unconfigured"
     assert health["database_volume"]["free_bytes"] is None
-    assert health["projected_free_space_bytes"] is None
+    assert health["accounting"]["volume_free_bytes"] == 100 * 1024**3
+    assert health["projected_free_space_bytes"] is not None
 
 
 def test_relative_value_cleanup_skips_protected_prefix_and_keeps_recent(storage):

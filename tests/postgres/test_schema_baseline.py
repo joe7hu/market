@@ -25,6 +25,14 @@ def catalog_hash(connection):
     return hashlib.sha256(json.dumps(schema_contract(connection), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def test_previous_revision_upgrades_to_evidence_schema(postgres_dsn):
+    upgrade_database(postgres_dsn, "20260924_0039")
+    upgrade_database(postgres_dsn, HEAD_REVISION)
+    with psycopg.connect(postgres_dsn) as connection:
+        assert connection.execute("SELECT version_num FROM public.alembic_version").fetchone()[0] == HEAD_REVISION
+        assert connection.execute("SELECT to_regclass('analysis.ticker_decision_checkpoint')").fetchone()[0] is not None
+
+
 def test_baseline_matches_verified_schema_and_application_queries(baseline_postgres_dsn):
     with psycopg.connect(baseline_postgres_dsn) as connection:
         assert catalog_hash(connection) in BASELINE_SCHEMA_HASHES
@@ -122,6 +130,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260924_0037_option_payload_trigger.py',
         '20260924_0038_verified_run_archive_prune.py',
         '20260924_0039_option_thesis_expression_grants.py',
+        '20260926_0040_decision_evidence.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27

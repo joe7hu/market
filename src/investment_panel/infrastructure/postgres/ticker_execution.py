@@ -160,10 +160,11 @@ class TickerPaperExecutionRepository:
                        market_state_publication_id::text, market_state_snapshot,
                        portfolio_impacts, risk_policy_snapshot
                 FROM analysis.ticker_decision_read
-                WHERE instrument_id = %s AND decision_revision = %s
-                LIMIT 1
+                WHERE instrument_id = %s AND decision_revision = %s AND status = 'published'
+                  AND resolution->>'trade_plan_id' = %s
+                ORDER BY as_of DESC, published_at DESC, id DESC LIMIT 1
                 """,
-                [instrument["id"], requested_revision],
+                [instrument["id"], requested_revision, trade_plan_id],
             ).fetchone()
             if ticker_decision is None:
                 raise ValueError("ticker decision context is missing in PostgreSQL")
@@ -486,23 +487,46 @@ class TickerPaperExecutionRepository:
             raise ValueError("ticker market publication is newer than the decision cutoff")
         authority_rows = connection.execute(
             """
-            SELECT item.model_name, item.publication_id::text AS publication_id,
+            SELECT item.model_name, publication.id::text AS publication_id,
                    payload.payload, publication.published_at, run.input_cutoff
-            FROM app.current_publication_item item
+            FROM app.publication publication
+            JOIN app.publication_bundle_item item ON item.bundle_id = publication.bundle_id
             JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
-            JOIN app.publication publication ON publication.id = item.publication_id
             JOIN analysis.run run ON run.id = publication.analysis_run_id
-            WHERE item.scope = 'ticker-opportunity-ranking'
+            WHERE publication.id = %s::uuid
+              AND publication.scope = 'ticker-opportunity-ranking'
               AND item.model_name = ANY(%s)
-              AND publication.status = 'published'
+              AND publication.status IN ('published', 'superseded')
               AND payload.payload->>'ticker' = %s
               AND payload.payload->>'decision_revision' = %s
               AND payload.payload->>'opportunity_episode_id' = %s
             ORDER BY item.model_name, publication.published_at DESC, item.rank
             """,
-            [["opportunity_rank", "trade_plan", "alpha_signal"], decision.ticker,
-             decision.decision_revision, decision.opportunity_episode_id],
+            [decision.trade_plan.publication_id if decision.trade_plan else None,
+             ["opportunity_rank", "trade_plan", "alpha_signal"], decision.ticker,
+            decision.decision_revision, decision.opportunity_episode_id],
         ).fetchall()
+        if not authority_rows:
+            authority_rows = connection.execute(
+                """
+                SELECT item.model_name, publication.id::text AS publication_id,
+                       item.payload, publication.published_at, run.input_cutoff
+                FROM app.publication publication
+                JOIN app.publication_item item ON item.publication_id = publication.id
+                JOIN analysis.run run ON run.id = publication.analysis_run_id
+                WHERE publication.id = %s::uuid
+                  AND publication.scope = 'ticker-opportunity-ranking'
+                  AND item.model_name = ANY(%s)
+                  AND publication.status IN ('published', 'superseded')
+                  AND item.payload->>'ticker' = %s
+                  AND item.payload->>'decision_revision' = %s
+                  AND item.payload->>'opportunity_episode_id' = %s
+                ORDER BY item.model_name, publication.published_at DESC, item.rank
+                """,
+                [decision.trade_plan.publication_id if decision.trade_plan else None,
+                 ["opportunity_rank", "trade_plan", "alpha_signal"], decision.ticker,
+                 decision.decision_revision, decision.opportunity_episode_id],
+            ).fetchall()
         grouped: dict[str, list[Any]] = {}
         for item in authority_rows:
             grouped.setdefault(str(item["model_name"]), []).append(item)
@@ -514,13 +538,11 @@ class TickerPaperExecutionRepository:
         plan_row = grouped["trade_plan"][0]
         rank_payload = dict(rank["payload"] or {})
         plan_payload = dict(plan_row["payload"] or {})
-        if rank["published_at"] is None or _utc(rank["published_at"]) > decision.cutoff:
-            raise ValueError("ticker opportunity rank is newer than the decision cutoff")
-        if rank["input_cutoff"] is None or _utc(rank["input_cutoff"]) > decision.cutoff:
+        if rank["published_at"] is None or plan_row["published_at"] is None:
+            raise ValueError("ticker rank or plan publication is incomplete")
+        if rank["input_cutoff"] is None or _utc(rank["input_cutoff"]) != decision.cutoff:
             raise ValueError("ticker opportunity rank input cutoff is stale in PostgreSQL")
-        if plan_row["published_at"] is None or _utc(plan_row["published_at"]) > decision.cutoff:
-            raise ValueError("ticker trade plan is newer than the decision cutoff")
-        if plan_row["input_cutoff"] is None or _utc(plan_row["input_cutoff"]) > decision.cutoff:
+        if plan_row["input_cutoff"] is None or _utc(plan_row["input_cutoff"]) != decision.cutoff:
             raise ValueError("ticker trade plan input cutoff is stale in PostgreSQL")
         if str(rank["publication_id"]) != str(plan_row["publication_id"]):
             raise ValueError("ticker opportunity rank and trade plan publications differ")

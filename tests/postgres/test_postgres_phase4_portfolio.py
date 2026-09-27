@@ -572,6 +572,26 @@ def test_repository_persists_and_replays_cash_plus_two_trim_sources_with_conserv
                  "trade_plan_id": action_id, "rank_id": rank_id, "strategy_forecast_id": forecast_id,
              }})],
         ).fetchone()["id"]
+        connection.execute("""
+            WITH evidence AS (
+              SELECT compact_manifest, refs FROM analysis.ticker_decision decision
+              CROSS JOIN LATERAL analysis.intern_decision_evidence(
+                decision.input_manifest, decision.resolution, decision.capital_action,
+                decision.expressions, decision.selected_expression,
+                decision.opportunity_episode, decision.portfolio_impacts)
+              WHERE decision.id = %s
+            )
+            UPDATE analysis.ticker_decision decision
+            SET input_manifest = evidence.compact_manifest, evidence_refs = evidence.refs,
+                evidence_normalized = true
+            FROM evidence WHERE decision.id = %s
+        """, [decision_id, decision_id])
+        assert connection.execute("""
+            SELECT input_manifest ? 'trade_plan' AS inline,
+                   (SELECT input_manifest ? 'trade_plan'
+                    FROM analysis.ticker_decision_read WHERE id = %s) AS readable
+            FROM analysis.ticker_decision WHERE id = %s
+        """, [decision_id, decision_id]).fetchone() == {"inline": False, "readable": True}
 
         calibration_order_id = uuid4()
         submitted_at = AS_OF + timedelta(seconds=1)

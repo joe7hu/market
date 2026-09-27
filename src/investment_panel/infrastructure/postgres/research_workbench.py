@@ -1083,7 +1083,7 @@ class ResearchWorkbenchRepository:
                              AND (outcome.metadata->>'cost_adjusted_selected_return') ~ '^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
                        ) AS mean_modeled_cost_delta
                 FROM analysis.ticker_outcome outcome
-                JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+                JOIN analysis.ticker_decision_read decision ON decision.id = outcome.ticker_decision_id
                 WHERE outcome.metadata->>'plan_authority' = 'canonical'
                   AND NULLIF(outcome.metadata->>'plan_blocker', '') IS NULL
                   AND outcome.available_at <= now()
@@ -1111,7 +1111,7 @@ class ResearchWorkbenchRepository:
                        outcome.metadata->>'regime_slice' AS regime_slice,
                        outcome.metadata->>'sector_slice' AS sector_slice
                 FROM analysis.ticker_outcome outcome
-                JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+                JOIN analysis.ticker_decision_read decision ON decision.id = outcome.ticker_decision_id
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 WHERE outcome.metadata->>'plan_authority' = 'canonical'
                   AND NULLIF(outcome.metadata->>'plan_blocker', '') IS NULL

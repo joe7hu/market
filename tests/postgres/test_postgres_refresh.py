@@ -112,6 +112,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
             return {"status": "ok"}
 
     monkeypatch.setattr(postgres_refresh, "RetentionRepository", _Retention)
+    monkeypatch.setattr(postgres_refresh.StorageArchiveService, "account", lambda _self, **_kwargs: {"status": "ok"})
 
     result = postgres_refresh.full("config.yaml")
 

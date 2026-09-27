@@ -448,6 +448,91 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         assert "999.0" not in json.dumps(decision.input_manifest.inputs, default=str)
         assert not any("CALL" in blocker or "PUT" in blocker for blocker in decision.context_blockers)
 
+        with runtime.read() as connection:
+            before = connection.execute("SELECT count(*) AS count FROM analysis.ticker_decision").fetchone()["count"]
+            bundles = connection.execute("SELECT count(*) AS count FROM app.publication_bundle").fetchone()["count"]
+            orders = connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()["count"]
+        with runtime.transaction() as connection:
+            connection.execute("""
+                UPDATE analysis.ticker_decision SET semantic_fingerprint = NULL
+                WHERE instrument_id = (SELECT id FROM catalog.instrument WHERE symbol = 'LANE')
+            """)
+        repeated = ticker_decisions.publish(
+            "config.yaml", symbols=["LANE", "BROKEN"], as_of=decision_cutoff,
+            market_state_publication_id=market_publication_id,
+        )
+        assert repeated["published_count"] == 0
+        assert repeated["skipped_count"] == 1
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM analysis.ticker_decision").fetchone()["count"] == before
+            assert connection.execute("SELECT count(*) AS count FROM app.publication_bundle").fetchone()["count"] == bundles
+            assert connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()["count"] == orders
+
+        # An intervening ranking bundle must not make an unchanged plan vanish
+        # from the current publication or cause another decision/order write.
+        analysis = AnalysisRepository(runtime)
+        intervening_run = analysis.start_run(
+            ticker_decisions.RANKING_SCOPE, input_cutoff=decision_cutoff + timedelta(seconds=1),
+            code_version="fixture-intervening", inputs={"fixture": "other-ticker"},
+        )
+        analysis.publish(intervening_run, ticker_decisions.RANKING_SCOPE, {
+            "opportunity_rank": [{"stable_key": "OTHER:rank", "ticker": "OTHER", "rank_id": "other"}],
+            "trade_plan": [{"stable_key": "OTHER:plan", "ticker": "OTHER", "trade_plan_id": "other"}],
+        })
+        with runtime.read() as connection:
+            payload_count = connection.execute("SELECT count(*) AS count FROM app.publication_payload").fetchone()["count"]
+        restored = ticker_decisions.publish(
+            "config.yaml", symbols=["LANE", "BROKEN"], as_of=decision_cutoff,
+            market_state_publication_id=market_publication_id,
+        )
+        assert restored["published_count"] == 0
+        assert restored["skipped_count"] == 1
+        assert restored["ranking_publication_id"] != result["ranking_publication_id"]
+        covered_again = ticker_decisions.publish(
+            "config.yaml", symbols=["LANE", "BROKEN"], as_of=decision_cutoff,
+            market_state_publication_id=market_publication_id,
+        )
+        assert covered_again["ranking_publication_id"] == restored["ranking_publication_id"]
+        covered_id, covered_models = analysis.current_ranking_rows()
+        covered_ranks = covered_models["opportunity_rank"]
+        covered_plans = covered_models["trade_plan"]
+        assert covered_id == restored["ranking_publication_id"]
+        assert next(row for row in covered_ranks if row["ticker"] == "LANE")["publication_id"] == decision.trade_plan.publication_id
+        assert next(row for row in covered_plans if row["ticker"] == "LANE")["publication_id"] == decision.trade_plan.publication_id
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM app.publication_payload").fetchone()["count"] == payload_count
+        incomplete_run = analysis.start_run(
+            ticker_decisions.RANKING_SCOPE,
+            input_cutoff=decision_cutoff + timedelta(seconds=2),
+            code_version="fixture-incomplete", inputs={"fixture": "missing-supporting-models"},
+        )
+        incomplete_id = analysis.publish(incomplete_run, ticker_decisions.RANKING_SCOPE, {
+            "opportunity_rank": [{**row, "_canonical_publication_id": decision.trade_plan.publication_id}
+                                 for row in covered_ranks],
+            "trade_plan": [{**row, "_canonical_publication_id": decision.trade_plan.publication_id}
+                           for row in covered_plans],
+        })
+        with runtime.read() as connection:
+            incomplete_payload_count = connection.execute(
+                "SELECT count(*) AS count FROM app.publication_payload").fetchone()["count"]
+        completed_again = ticker_decisions.publish(
+            "config.yaml", symbols=["LANE", "BROKEN"], as_of=decision_cutoff,
+            market_state_publication_id=market_publication_id,
+        )
+        assert completed_again["ranking_publication_id"] != str(incomplete_id)
+        assert analysis.publication_rows(ticker_decisions.RANKING_SCOPE, "instrument_state_snapshot")
+        assert analysis.publication_rows(ticker_decisions.RANKING_SCOPE, "alpha_signal")
+        ranks = analysis.publication_rows(
+            ticker_decisions.RANKING_SCOPE, "opportunity_rank", include_lineage=True)
+        assert next(row for row in ranks if row["ticker"] == "LANE")["publication_id"] == decision.trade_plan.publication_id
+        plans = analysis.publication_rows(
+            ticker_decisions.RANKING_SCOPE, "trade_plan", include_lineage=True)
+        assert next(row for row in plans if row["ticker"] == "LANE")["publication_id"] == decision.trade_plan.publication_id
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM analysis.ticker_decision").fetchone()["count"] == before
+            assert connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()["count"] == orders
+            assert connection.execute("SELECT count(*) AS count FROM app.publication_payload").fetchone()["count"] == incomplete_payload_count
+
     finally:
         runtime.close()
 
@@ -524,6 +609,25 @@ def test_decision_funnel_compact_publication_read_keeps_legacy_fallback(
         )
         assert [row["ticker"] for row in historical_alpha] == ["LEGACY"]
         assert historical_rank[0]["publication_id"] == historical_plan[0]["publication_id"] == publication["id"]
+
+        compact_run = analysis.start_run(
+            "ticker-opportunity-ranking", input_cutoff=cutoff + timedelta(milliseconds=1),
+            code_version="test", inputs={"fixture": "compact-funnel"},
+        )
+        compact_id = analysis.publish(compact_run, "ticker-opportunity-ranking", {
+            "opportunity_rank": [{"stable_key": "LEGACY:rank", "ticker": "LEGACY",
+                                  "rank_id": "canonical", "_canonical_publication_id": publication["id"]}],
+            "trade_plan": [{"stable_key": "LEGACY:plan", "ticker": "LEGACY",
+                            "trade_plan_id": "canonical", "_canonical_publication_id": publication["id"]}],
+        })
+        assert str(compact_id) != publication["id"]
+        _, current_rank, current_plan = TickerDecisionRepository(runtime)._current_funnel_publication_rows()
+        assert current_rank[0]["publication_id"] == current_plan[0]["publication_id"] == publication["id"]
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE app.publication SET status = 'superseded' WHERE id = %s", [compact_id])
+        _, past_rank, past_plan = TickerDecisionRepository(runtime)._current_funnel_publication_rows(
+            reference=datetime.now(UTC) + timedelta(minutes=1))
+        assert past_rank[0]["publication_id"] == past_plan[0]["publication_id"] == publication["id"]
     finally:
         runtime.close()
 

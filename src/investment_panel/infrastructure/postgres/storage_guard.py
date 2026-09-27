@@ -16,10 +16,10 @@ import shutil
 
 
 GIB = 1024**3
-DEFAULT_MIN_FREE_GIB = 20
+DEFAULT_MIN_FREE_GIB = 15
 DEFAULT_STORAGE_PATH = "/Users/joehu/proj/market"
 DEFAULT_OPTION_HISTORY_GROWTH_GIB_PER_TRADING_DAY = 0.7
-HOT_OPTION_RETENTION_DAYS = 7
+HOT_OPTION_RETENTION_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,8 @@ class StorageCapacity:
         return asdict(self)
 
 
-def storage_capacity(*, path: str | Path | None = None, minimum_free_gib: int | None = None) -> StorageCapacity:
+def storage_capacity(*, path: str | Path | None = None, minimum_free_gib: int | None = None,
+                     forecast_free_bytes: int | None = None) -> StorageCapacity:
     """Return the bounded capacity state without changing files or storage.
 
     Missing or unreadable storage is treated as unavailable.  Event/ticket
@@ -48,7 +49,8 @@ def storage_capacity(*, path: str | Path | None = None, minimum_free_gib: int | 
     ``history_collection_allowed`` result only to block full-history expansion.
     """
 
-    target = Path(path or os.environ.get("MARKET_STORAGE_GUARD_PATH") or DEFAULT_STORAGE_PATH)
+    target = Path(path or os.environ.get("MARKET_STORAGE_DATABASE_PATH")
+                  or os.environ.get("MARKET_STORAGE_GUARD_PATH") or DEFAULT_STORAGE_PATH)
     raw_minimum = minimum_free_gib
     if raw_minimum is None:
         raw_minimum = _positive_int(os.environ.get("MARKET_MIN_FREE_STORAGE_GIB"), DEFAULT_MIN_FREE_GIB)
@@ -73,15 +75,17 @@ def storage_capacity(*, path: str | Path | None = None, minimum_free_gib: int | 
             steady_state_hot_storage_bytes=None,
             projected_free_bytes_after_hot_retention=None,
         )
-    allowed = available > minimum
-    projected = max(0, available - int(growth_gib * 30 * GIB))
+    projected = max(0, forecast_free_bytes if forecast_free_bytes is not None
+                    else available - int(growth_gib * 30 * GIB))
+    allowed = available > minimum and projected > minimum
     steady_state = int(growth_gib * HOT_OPTION_RETENTION_DAYS * GIB)
     return StorageCapacity(
         path=str(target),
         available_bytes=available,
         minimum_free_bytes=minimum,
         history_collection_allowed=allowed,
-        reason=None if allowed else "storage_below_minimum_free_space",
+        reason=None if allowed else ("storage_below_minimum_free_space" if available <= minimum
+                                     else "storage_forecast_below_minimum_free_space"),
         option_history_growth_gib_per_trading_day=growth_gib,
         projected_free_bytes_after_30_trading_days=projected,
         projected_reserve_breach_within_30_trading_days=projected <= minimum,

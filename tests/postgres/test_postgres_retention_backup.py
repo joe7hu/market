@@ -223,6 +223,23 @@ def test_publication_retention_is_bounded_dry_run_and_repeatable(postgres_dsn: s
     assert published_by_scope == [("market", 1), ("today", 1)]
 
 
+def test_explicit_publication_prune_keeps_decision_owned_scopes(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    reference = datetime(2026, 8, 12, 16, tzinfo=UTC)
+    try:
+        with runtime.transaction() as connection:
+            for sequence, scope in enumerate(("ticker-opportunity-ranking", "ticker-outcome-attribution"), 1):
+                _insert_publication(connection, scope=scope, status="superseded", at=reference - timedelta(days=40), sequence=sequence)
+            ids = [row["id"] for row in connection.execute(
+                "SELECT id FROM app.publication WHERE scope IN ('ticker-opportunity-ranking', 'ticker-outcome-attribution')"
+            ).fetchall()]
+        assert RetentionRepository(runtime).prune_publications(now=reference, candidate_ids=ids, dry_run=True)["publications"] == 0
+    finally:
+        runtime.close()
+
+
 def test_publication_only_retention_is_restart_safe(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)

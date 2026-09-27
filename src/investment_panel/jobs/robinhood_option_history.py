@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime, time, timedelta
 import json
+from pathlib import Path
 from typing import Any
 
 from investment_panel.settings import load_config
@@ -18,6 +19,7 @@ from investment_panel.infrastructure.postgres.options_history_policy import EVEN
 from investment_panel.infrastructure.postgres.option_events import OptionEventRepository
 from investment_panel.infrastructure.postgres.options_recovery_execution import RecoveryExecutionRepository
 from investment_panel.infrastructure.postgres.storage_guard import storage_capacity
+from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
 
 
 def history_slot(now: datetime | None = None) -> datetime | None:
@@ -79,11 +81,13 @@ def run(
             for symbol in dict.fromkeys(symbol for symbol in provider.history_symbols if symbol)
         ]
     symbols = [str(item["symbol"]).upper() for item in scheduled]
-    capacity = storage_capacity()
+    accounting = StorageArchiveService(runtime, Path(config.nas.storage_archive_dir)).account(record=True)
+    capacity = storage_capacity(path=accounting.get("path"),
+                                forecast_free_bytes=accounting.get("forecast_30d_free_bytes"))
     blocked_history = [
         item for item in scheduled
         if str(item.get("profile") or HISTORY_PROFILE) == HISTORY_PROFILE
-        and not capacity.history_collection_allowed
+        and (accounting["status"] != "ok" or not capacity.history_collection_allowed)
     ]
     scheduled = [item for item in scheduled if item not in blocked_history]
     register_option_source(
@@ -95,7 +99,7 @@ def run(
             "symbol": str(item["symbol"]).upper(),
             "profile": HISTORY_PROFILE,
             "status": "skipped",
-            "reason": "storage_below_minimum_free_space",
+            "reason": capacity.reason or "storage_accounting_unavailable",
         }
         for item in blocked_history
     ]
@@ -271,7 +275,9 @@ def run(
                     policy.release_provider_lease(lease_id)
     complete = [capture for capture in captures if capture.get("status") == "succeeded"]
     failed = [capture for capture in captures if capture.get("status") == "failed"]
-    skipped_for_storage = [capture for capture in captures if capture.get("reason") == "storage_below_minimum_free_space"]
+    skipped_for_storage = [capture for capture in captures if capture.get("reason") in {
+        "storage_below_minimum_free_space", "storage_forecast_below_minimum_free_space",
+    }]
     return {
         "status": (
             "failed" if failed and not complete
