@@ -93,7 +93,11 @@ def upgrade() -> None:
         REVOKE ALL ON FUNCTION app.option_bundle_projection(uuid) FROM PUBLIC;
         GRANT EXECUTE ON FUNCTION app.option_bundle_projection(uuid) TO market_app;
         CREATE OR REPLACE VIEW app.option_publication_projection AS
-          SELECT projected.* FROM app.publication_bundle bundle
+          SELECT projected.bundle_id, projected.model_name, projected.stable_key,
+               projected.rank, projected.instrument_id,
+               projected.content_hash::character(64) AS content_hash,
+               projected.canonical_publication_id, projected.decision_payload_hash,
+               projected.payload FROM app.publication_bundle bundle
           CROSS JOIN LATERAL app.option_bundle_projection(bundle.id) projected
           WHERE bundle.scope = 'options-radar'
             AND bundle.projection_version = 'option-subsets-v1';
@@ -102,7 +106,7 @@ def upgrade() -> None:
         UNION ALL
         SELECT current_item.scope, current_item.publication_id,
                projected.model_name, projected.stable_key, projected.rank,
-               projected.instrument_id, projected.content_hash,
+               projected.instrument_id, projected.content_hash::character(64),
                projected.decision_payload_hash, projected.payload
         FROM (SELECT DISTINCT scope, publication_id FROM app.current_publication_item
               WHERE model_name = 'candidate_event') current_item
@@ -128,7 +132,7 @@ def downgrade() -> None:
         UNION ALL
         SELECT current_item.scope, current_item.publication_id,
                projected.model_name, projected.stable_key, projected.rank,
-               projected.instrument_id, projected.content_hash,
+               projected.instrument_id, projected.content_hash::character(64),
                projected.decision_payload_hash, projected.payload
         FROM app.option_publication_projection projected
         JOIN app.publication publication ON publication.bundle_id = projected.bundle_id

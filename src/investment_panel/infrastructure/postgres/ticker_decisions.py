@@ -435,6 +435,8 @@ def _record_decision_checkpoint(connection: Any, decision_id: Any, decision: Tic
           health_state = CASE
             WHEN EXCLUDED.last_checked_at > analysis.ticker_decision_checkpoint.last_checked_at
             THEN EXCLUDED.health_state ELSE analysis.ticker_decision_checkpoint.health_state END
+WHERE EXCLUDED.first_checked_at < analysis.ticker_decision_checkpoint.first_checked_at
+   OR EXCLUDED.last_checked_at > analysis.ticker_decision_checkpoint.last_checked_at
     """, [decision_id, decision.as_of.astimezone(UTC).date(), decision.as_of,
           decision.as_of, "degraded" if decision.context_blockers else "ok"])
 
@@ -547,7 +549,10 @@ class TickerDecisionRepository:
                         SET semantic_fingerprint = COALESCE(semantic_fingerprint, %s),
                             last_evaluated_at = GREATEST(COALESCE(last_evaluated_at, as_of), %s)
                         WHERE id = %s
-                    """, [fingerprint, decision.as_of, prior["id"]])
+                AND (semantic_fingerprint, last_evaluated_at) IS DISTINCT FROM
+                    (COALESCE(semantic_fingerprint, %s),
+                     GREATEST(COALESCE(last_evaluated_at, as_of), %s))
+                    """, [fingerprint, decision.as_of, prior["id"], fingerprint, decision.as_of])
                     _record_decision_checkpoint(connection, prior["id"], decision)
                     return {"status": "unchanged", "ticker_decision_id": str(prior["id"]),
                             "decision_revision": prior["decision_revision"]}
