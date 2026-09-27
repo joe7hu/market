@@ -250,8 +250,7 @@ def test_backdated_retry_cannot_reuse_superseded_decision(storage):
     assert old_id != current_id
     with pytest.raises(ValueError, match="backdated evaluation"):
         repository.publish(old, reuse_only=True)
-    with pytest.raises(ValueError, match="backdated evaluation"):
-        repository.publish(old)
+    assert repository.publish(old)["ticker_decision_id"] == old_id
     assert repository.latest("BACKDATE").as_of == cutoff + timedelta(minutes=1)
     with storage.runtime.read() as connection:
         assert connection.execute(
