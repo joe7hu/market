@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import gzip
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -1456,12 +1457,15 @@ def test_option_archive_drains_bounded_batches_with_one_backup_check(storage, mo
     result = storage_job.run("archive", phase="option-scans", batch_size=1,
                              max_batches=2, execute=True, backup_token=token)
     assert result["archived"] == 2 and result["batches"] == 2
-    assert len(checks) == 1
+    assert len(result["manifest_ids"]) == 2 and result["skipped"] == []
+    assert len(checks) == 2
     with storage.runtime.read() as connection:
         assert connection.execute("""SELECT count(*) AS n FROM analysis.option_decision
             WHERE decision_id = ANY(%s) AND evidence_state = 'archived'""",
             [[first, second]]).fetchone()["n"] == 2
-    backup_file.write_bytes(backup_file.read_bytes() + b"corrupt")
+    original_stat = backup_file.stat()
+    backup_file.write_bytes(b"x" * original_stat.st_size)
+    os.utime(backup_file, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
     with pytest.raises(ValueError, match="backup token does not identify"):
         OptionEvidenceArchive(storage).run(now=now, execute=True, backup_token=token)
 

@@ -28,14 +28,23 @@ def _archive_batches(archiver: Any, *, batch_size: int, max_batches: int,
                      execute: bool, backup_token: str | None) -> dict[str, Any]:
     if not 1 <= max_batches <= 10000:
         raise ValueError("archive max_batches must be 1..10000")
-    archived = 0
+    totals = {"archived": 0, "payloads_pending_gc": 0, "contexts_pending_gc": 0}
+    manifest_ids: list[int] = []
+    skipped: list[str] = []
     result: dict[str, Any] = {}
     for batch in range(max_batches):
         result = archiver.run(batch_size=batch_size, execute=execute, backup_token=backup_token)
-        archived += int(result.get("archived", 0))
+        for key in totals:
+            totals[key] += int(result.get(key, 0))
+        if result.get("manifest_id") is not None:
+            manifest_ids.append(int(result["manifest_id"]))
+        skipped.extend(result.get("skipped", []))
         if result["status"] != "batch_complete":
             break
-    return result if max_batches == 1 else {**result, "archived": archived, "batches": batch + 1}
+    return result if max_batches == 1 else {
+        **result, **totals, "manifest_ids": manifest_ids,
+        "skipped": skipped, "batches": batch + 1,
+    }
 
 
 def run(
