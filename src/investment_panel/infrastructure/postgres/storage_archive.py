@@ -86,6 +86,7 @@ class StorageArchiveService:
     def __init__(self, runtime: DatabaseRuntime, archive_root: Path) -> None:
         self.runtime = runtime
         self.archive_root = archive_root
+        self._verified_backup_cache: tuple[str, Path, tuple[int, int, int], dict[str, Any]] | None = None
 
     def account(self, *, record: bool = False) -> dict[str, Any]:
         """Measure the PostgreSQL filesystem and a conservative 30-day trend."""
@@ -902,6 +903,11 @@ class StorageArchiveService:
     def _require_verified_backup(self, token: str | None) -> dict[str, Any]:
         if not token or not _BACKUP_SHA_RE.fullmatch(token.lower()):
             raise ValueError("a verified PostgreSQL backup SHA-256 token is required")
+        cached = self._verified_backup_cache
+        if cached is not None and cached[0] == token.lower():
+            current = cached[1].stat()
+            if (current.st_ino, current.st_size, current.st_mtime_ns) == cached[2]:
+                return cached[3]
         backup_root = self.archive_root.parent.parent / "postgres-backups"
         for manifest_path in sorted(backup_root.glob("*.json"), reverse=True):
             try:
@@ -914,6 +920,12 @@ class StorageArchiveService:
                 and Path(str(manifest.get("dump_path", ""))).is_file()
             ):
                 if _sha256_file(Path(str(manifest["dump_path"]))) == token.lower():
+                    path = Path(str(manifest["dump_path"]))
+                    current = path.stat()
+                    self._verified_backup_cache = (
+                        token.lower(), path,
+                        (current.st_ino, current.st_size, current.st_mtime_ns), manifest,
+                    )
                     return manifest
         raise ValueError("backup token does not identify a verified NAS PostgreSQL backup")
 

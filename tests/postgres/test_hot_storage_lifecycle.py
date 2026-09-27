@@ -1426,6 +1426,46 @@ def test_pending_shadow_keeps_compact_plan_and_quote_while_scan_archives(storage
                                [shadow_id])
 
 
+def test_option_archive_drains_bounded_batches_with_one_backup_check(storage, monkeypatch):
+    from investment_panel.jobs import storage as storage_job
+    from investment_panel.infrastructure.postgres import storage_archive
+
+    now, first = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        second = connection.execute("""INSERT INTO analysis.decision
+            (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+            SELECT run_id, 'old-option-2', kind, instrument_id, as_of + interval '1 microsecond',
+                   state, %s FROM analysis.decision WHERE id = %s RETURNING id""",
+            ["e" * 64, first]).fetchone()["id"]
+        connection.execute("""INSERT INTO analysis.option_decision
+            (decision_id, contract_id, snapshot_id, quote_observed_at, paper_state, details)
+            SELECT %s, contract_id, snapshot_id, quote_observed_at, paper_state, details
+            FROM analysis.option_decision WHERE decision_id = %s""", [second, first])
+    token = _verified_backup(storage)
+    backup_file = storage.archive_root.parent.parent / "postgres-backups" / "fixture.dump"
+    original_hash = storage_archive._sha256_file
+    checks = []
+
+    def counted_hash(path):
+        if path == backup_file:
+            checks.append(path)
+        return original_hash(path)
+
+    monkeypatch.setattr(storage_archive, "_sha256_file", counted_hash)
+    monkeypatch.setattr(storage_job, "_service", lambda _config: storage)
+    result = storage_job.run("archive", phase="option-scans", batch_size=1,
+                             max_batches=2, execute=True, backup_token=token)
+    assert result["archived"] == 2 and result["batches"] == 2
+    assert len(checks) == 1
+    with storage.runtime.read() as connection:
+        assert connection.execute("""SELECT count(*) AS n FROM analysis.option_decision
+            WHERE decision_id = ANY(%s) AND evidence_state = 'archived'""",
+            [[first, second]]).fetchone()["n"] == 2
+    backup_file.write_bytes(backup_file.read_bytes() + b"corrupt")
+    with pytest.raises(ValueError, match="backup token does not identify"):
+        OptionEvidenceArchive(storage).run(now=now, execute=True, backup_token=token)
+
+
 def test_active_paper_reference_keeps_old_option_scan_local(storage):
     now, decision_id = _completed_option_scan(storage)
     with storage.runtime.transaction() as connection:

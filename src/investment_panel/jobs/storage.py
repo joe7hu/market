@@ -24,6 +24,20 @@ def _service(config_path: str | None) -> StorageArchiveService:
     return StorageArchiveService(runtime_for_config(config), Path(config.nas.storage_archive_dir))
 
 
+def _archive_batches(archiver: Any, *, batch_size: int, max_batches: int,
+                     execute: bool, backup_token: str | None) -> dict[str, Any]:
+    if not 1 <= max_batches <= 10000:
+        raise ValueError("archive max_batches must be 1..10000")
+    archived = 0
+    result: dict[str, Any] = {}
+    for batch in range(max_batches):
+        result = archiver.run(batch_size=batch_size, execute=execute, backup_token=backup_token)
+        archived += int(result.get("archived", 0))
+        if result["status"] != "batch_complete":
+            break
+    return result if max_batches == 1 else {**result, "archived": archived, "batches": batch + 1}
+
+
 def run(
     command: str,
     *,
@@ -58,11 +72,13 @@ def run(
                 raise ValueError("ticker evidence GC requires compact and --decision-id")
             return TickerEvidenceArchive(service).collect_for_decision(
                 decision_id, execute=execute, backup_token=backup_token)
-        return TickerEvidenceArchive(service).run(batch_size=batch_size, execute=execute,
-                                                  backup_token=backup_token)
+        return _archive_batches(TickerEvidenceArchive(service), batch_size=batch_size,
+                                max_batches=max_batches, execute=execute,
+                                backup_token=backup_token)
     if command in {"archive", "compact"} and phase == "option-scans":
-        return OptionEvidenceArchive(service).run(batch_size=batch_size, execute=execute,
-                                                  backup_token=backup_token)
+        return _archive_batches(OptionEvidenceArchive(service), batch_size=batch_size,
+                                max_batches=max_batches, execute=execute,
+                                backup_token=backup_token)
     if command == "plan":
         return service.plan()
     if command in {"archive", "compact"} and phase == "decision-manifests":
