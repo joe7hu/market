@@ -1,0 +1,155 @@
+name: storage-audit-verification
+on:
+  push:
+    branches: [codex/storage-audit-20260927]
+    paths: [.github/workflows/storage-audit-verification.yml]
+permissions:
+  contents: write
+jobs:
+  storage-audit:
+    if: github.ref == 'refs/heads/codex/storage-audit-20260927'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Apply exact review corrections and freeze candidate
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          paths = {
+              'migrations/versions/20260927_0042_storage_access_paths.py': '61fe67c8a10ad41b58b7d5dc2dc1b9d7daebd10e563cf8eb511ef7fecdd17eb7',
+              'src/investment_panel/infrastructure/postgres/ticker_decisions.py': '705e4df9b437c6f6541d03567e64d66680c95829019166e2f4f99382dc6d28c3',
+          }
+          for name, digest in paths.items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest, name
+          p = Path(next(iter(paths)))
+          s = p.read_text().replace('SELECT projected.* FROM app.publication_bundle bundle', '''SELECT projected.bundle_id, projected.model_name, projected.stable_key,
+                         projected.rank, projected.instrument_id,
+                         projected.content_hash::character(64) AS content_hash,
+                         projected.canonical_publication_id, projected.decision_payload_hash,
+                         projected.payload FROM app.publication_bundle bundle''')
+          s = s.replace('projected.instrument_id, projected.content_hash,', 'projected.instrument_id, projected.content_hash::character(64),')
+          p.write_text(s)
+          p = Path('src/investment_panel/infrastructure/postgres/ticker_decisions.py')
+          s = p.read_text()
+          old = 'THEN EXCLUDED.health_state ELSE analysis.ticker_decision_checkpoint.health_state END\n    """,'
+          assert s.count(old) == 1
+          s = s.replace(old, '''THEN EXCLUDED.health_state ELSE analysis.ticker_decision_checkpoint.health_state END
+          WHERE EXCLUDED.first_checked_at < analysis.ticker_decision_checkpoint.first_checked_at
+             OR EXCLUDED.last_checked_at > analysis.ticker_decision_checkpoint.last_checked_at
+              """,''')
+          old = '''                        WHERE id = %s
+                              """, [fingerprint, decision.as_of, prior["id"]])'''
+          # Match only the unchanged-decision path, never a publication write.
+          old = '                        WHERE id = %s\n                    """, [fingerprint, decision.as_of, prior["id"]])'
+          assert s.count(old) == 1
+          s = s.replace(old, '''                        WHERE id = %s
+                          AND (semantic_fingerprint, last_evaluated_at) IS DISTINCT FROM
+                              (COALESCE(semantic_fingerprint, %s),
+                               GREATEST(COALESCE(last_evaluated_at, as_of), %s))
+                              """, [fingerprint, decision.as_of, prior["id"], fingerprint, decision.as_of])''')
+          p.write_text(s)
+          compile(s, str(p), 'exec')
+          PY
+          git rm .github/workflows/storage-audit-verification.yml
+          git add migrations/versions/20260927_0042_storage_access_paths.py src/investment_panel/infrastructure/postgres/ticker_decisions.py
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: preserve projection types and skip identical decision checkpoint rewrites'
+          git push origin HEAD:refs/heads/codex/storage-audit-20260927
+          mkdir -p "$RUNNER_TEMP/storage-proof"
+          git rev-parse HEAD | tee "$RUNNER_TEMP/storage-proof/candidate.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/storage-proof/market-source.tar.gz"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: '0.9.26'
+      - uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee
+        with:
+          postgres-version: '18'
+      - name: Install locked dependencies
+        run: |
+          uv sync --extra test --locked
+          npm ci --prefix frontend
+      - name: Prove identical checkpoint replay fails on original main
+        run: |
+          set -euo pipefail
+          red="$RUNNER_TEMP/storage-red"
+          git worktree add --detach "$red" 555de6b0b14c6d5c84c4283d5f4a6ebf285364b5
+          cp tests/postgres/test_storage_checkpoint_retry.py "$red/tests/postgres/"
+          set +e
+          (cd "$red" && uv run --extra test python -m pytest -q tests/postgres/test_storage_checkpoint_retry.py -k same_evaluation --junitxml="$RUNNER_TEMP/storage-proof/checkpoint-red.xml") 2>&1 | tee "$RUNNER_TEMP/storage-proof/checkpoint-red.log"
+          result=${PIPESTATUS[0]}
+          set -e
+          test "$result" -eq 1
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'storage-proof/checkpoint-red.xml').getroot()
+          assert not root.findall('.//error')
+          assert len(root.findall('.//failure')) == 1
+          PY
+          git worktree remove --force "$red"
+      - name: Bootstrap and inventory isolated database
+        env:
+          MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          ci_password="$(openssl rand -hex 32)"
+          PGPASSWORD=postgres psql "$MARKET_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE market_ci_login LOGIN PASSWORD '$ci_password' NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION"
+          export MARKET_APP_LOGIN_ROLE=market_ci_login
+          export MARKET_APP_DATABASE_PASSWORD="$ci_password"
+          uv run market-db-migrate
+          uv run python - <<'PY' > "$RUNNER_TEMP/storage-proof/schema-audit.json"
+          import json, os
+          from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+          from investment_panel.infrastructure.postgres.storage_audit import audit_storage
+          runtime = DatabaseRuntime(os.environ['MARKET_DATABASE_URL'])
+          runtime.open()
+          try:
+              print(json.dumps(audit_storage(runtime), default=str, indent=2))
+          finally:
+              runtime.close()
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: storage-audit-early-proof
+          path: ${{ runner.temp }}/storage-proof/
+          retention-days: 7
+      - name: Affected PostgreSQL and API E2E
+        id: focused
+        run: |
+          set -euo pipefail
+          uv run --extra test python -m pytest -q tests/postgres/test_storage_efficiency.py tests/postgres/test_storage_checkpoint_retry.py tests/postgres/test_hot_storage_lifecycle.py tests/postgres/test_decision_storage.py tests/postgres/test_postgres_ingestion.py tests/postgres/test_postgres_retention_backup.py tests/postgres/test_postgres_panel_catalog.py tests/postgres/test_schema_baseline.py tests/postgres/test_ticker_paper_execution.py tests/postgres/test_outcome_publication_recovery.py tests/application_api/test_api.py --junitxml="$RUNNER_TEMP/storage-proof/focused.xml" 2>&1 | tee "$RUNNER_TEMP/storage-proof/focused.log"
+      - name: Guards
+        run: set -o pipefail; make guards 2>&1 | tee "$RUNNER_TEMP/storage-proof/guards.log"
+      - name: Check
+        run: set -o pipefail; make check 2>&1 | tee "$RUNNER_TEMP/storage-proof/check.log"
+      - name: Frozen release gate
+        run: set -o pipefail; make release-gate 2>&1 | tee "$RUNNER_TEMP/storage-proof/release-gate.log"
+      - name: Confirm frozen source
+        if: always()
+        run: |
+          git rev-parse HEAD
+          git status --short
+          git diff --check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: storage-audit-verification
+          path: ${{ runner.temp }}/storage-proof/
+          retention-days: 7
