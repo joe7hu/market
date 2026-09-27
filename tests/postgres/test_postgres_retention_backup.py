@@ -17,6 +17,7 @@ from investment_panel.infrastructure.postgres.backup import (
     verify_existing_backup,
 )
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
 from investment_panel.infrastructure.postgres.jobs import JobRepository
 from investment_panel.infrastructure.postgres.migrations import upgrade_database
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
@@ -223,19 +224,53 @@ def test_publication_retention_is_bounded_dry_run_and_repeatable(postgres_dsn: s
     assert published_by_scope == [("market", 1), ("today", 1)]
 
 
-def test_explicit_publication_prune_keeps_decision_owned_scopes(postgres_dsn: str) -> None:
+def test_ranking_publication_retention_waits_for_backfill_and_keeps_references(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
     runtime.open()
     reference = datetime(2026, 8, 12, 16, tzinfo=UTC)
     try:
         with runtime.transaction() as connection:
-            for sequence, scope in enumerate(("ticker-opportunity-ranking", "ticker-outcome-attribution"), 1):
+            for sequence, scope in enumerate(("ticker-opportunity-ranking", "ticker-opportunity-ranking", "ticker-outcome-attribution"), 1):
                 _insert_publication(connection, scope=scope, status="superseded", at=reference - timedelta(days=40), sequence=sequence)
             ids = [row["id"] for row in connection.execute(
-                "SELECT id FROM app.publication WHERE scope IN ('ticker-opportunity-ranking', 'ticker-outcome-attribution')"
+                """SELECT publication.id FROM app.publication publication
+                   JOIN analysis.run run ON run.id = publication.analysis_run_id
+                   WHERE scope IN ('ticker-opportunity-ranking', 'ticker-outcome-attribution')
+                   ORDER BY run.code_version"""
             ).fetchall()]
-        assert RetentionRepository(runtime).prune_publications(now=reference, candidate_ids=ids, dry_run=True)["publications"] == 0
+            instrument_id = reconcile_instrument(connection, "RETN")
+            decision_id = connection.execute("""INSERT INTO analysis.ticker_decision
+                (instrument_id, decision_revision, contract_version, as_of, input_hash,
+                 code_version, experiment_id, tactical, fundamental, capital_action,
+                 risk_policy, input_manifest, ranking_publication_id)
+                VALUES (%s, 'retention', 'test', now(), %s, 'test', 'test', '{}', '{}', '{}', '{}', '{}', %s)
+                RETURNING id""", [instrument_id, "a" * 64, ids[0]]).fetchone()["id"]
+        retention = RetentionRepository(runtime)
+        assert retention.prune_publications(now=reference, candidate_ids=ids, dry_run=True)["publications"] == 0
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.ticker_decision SET ranking_ref_checked = true WHERE id = %s", [decision_id])
+        assert retention.prune_publications(now=reference, candidate_ids=ids, dry_run=True)["publications"] == 1
+        assert retention.prune_publications(now=reference, dry_run=True)["publications"] == 1
+    finally:
+        runtime.close()
+
+
+def test_explicit_publication_prune_keeps_current_generation(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    reference = datetime(2026, 8, 12, 16, tzinfo=UTC)
+    try:
+        with runtime.transaction() as connection:
+            _insert_publication(connection, scope="market", status="published",
+                                at=reference - timedelta(days=40), sequence=101)
+            publication_id = connection.execute(
+                "SELECT id FROM app.publication WHERE scope = 'market'"
+            ).fetchone()["id"]
+        assert RetentionRepository(runtime).prune_publications(
+            now=reference, candidate_ids=[publication_id], dry_run=True,
+        )["publications"] == 0
     finally:
         runtime.close()
 

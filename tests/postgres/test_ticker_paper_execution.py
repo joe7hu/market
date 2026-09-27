@@ -1129,6 +1129,12 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         decision = TickerDecisionRepository(runtime).latest("PITX")
         assert decision is not None
         assert decision.as_of == observed
+        with runtime.read() as connection:
+            ranking_ref = connection.execute("""SELECT ranking_publication_id::text AS publication_id,
+                ranking_ref_checked FROM analysis.ticker_decision
+                WHERE instrument_id = (SELECT id FROM catalog.instrument WHERE symbol = 'PITX')
+                ORDER BY as_of DESC LIMIT 1""").fetchone()
+        assert ranking_ref == {"publication_id": result["ranking_publication_id"], "ranking_ref_checked": True}
         assert rank_publication["published_at"] > observed
         assert rank_publication["input_cutoff"] == observed
         assert len(decision.input_manifest.input_hash) == 64

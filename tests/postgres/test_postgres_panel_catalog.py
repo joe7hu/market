@@ -27,6 +27,18 @@ from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 
 
+def _ranking_publication(runtime: DatabaseRuntime, publication_id: str) -> None:
+    with runtime.transaction() as connection:
+        run_id = connection.execute("""INSERT INTO analysis.run
+            (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+            VALUES ('panel-rank-test', now(), 'test', %s, now(), now(), 'succeeded') RETURNING id""",
+            [uuid4().hex * 2]).fetchone()["id"]
+        connection.execute("""INSERT INTO app.publication
+            (id, scope, analysis_run_id, status)
+            VALUES (%s, 'ticker-opportunity-ranking', %s, 'superseded')""",
+            [publication_id, run_id])
+
+
 def test_panel_query_catalog_owns_alias_and_symbol_scope_policy() -> None:
     assert MODEL_ALIASES["ticker_memos"] == "research_packets"
     assert QUERY_POLICIES["research_packets"].symbol_scoped is True
@@ -467,6 +479,7 @@ def test_today_page_hydrates_plan_for_selected_decision_when_plan_stream_is_spar
             assert selected is not None
             impact = decision.portfolio_impacts.get(selected.kind)
             publication_id = str(uuid4())
+            _ranking_publication(runtime, publication_id)
             rank = {
                 "rank_id": f"rank:{symbol.lower()}",
                 "ticker": symbol,
@@ -504,6 +517,12 @@ def test_today_page_hydrates_plan_for_selected_decision_when_plan_stream_is_spar
 
         decision_row = panel.rows("ticker_decisions")[0]
         assert decision_row["ticker"] == f"{prefix}2"
+        with runtime.read() as connection:
+            unresolved = connection.execute("""SELECT ranking_publication_id, ranking_ref_checked
+                FROM analysis.ticker_decision WHERE id = %s::uuid""",
+                [published["ticker_decision_id"]]).fetchone()
+        assert str(unresolved["ranking_publication_id"]) == publication_id
+        assert unresolved["ranking_ref_checked"] is True
         rank = today_rank_for_row(decision_row, panel.rows("opportunity_rank"), f"{prefix}2")
         assert rank is not None
         assert rank["evaluated_universe_complete"] is True
@@ -540,6 +559,7 @@ def test_today_authority_validates_plan_authority_without_returning_full_plan(
         selected = decision.selected_expression
         assert selected is not None
         bundle_id = str(uuid4())
+        _ranking_publication(runtime, bundle_id)
         impact = decision.portfolio_impacts.get(selected.kind)
         rank = {
             "rank_id": f"rank:{symbol.lower()}",
@@ -880,6 +900,7 @@ def test_opportunities_fallback_accepts_production_rank_projection(migrated_post
             cutoff=as_of, input_cutoff=as_of, blockers=("no_trade_evidence",),
         ).model_dump(mode="json")
         rank["ranking_publication_id"] = str(uuid4())
+        _ranking_publication(runtime, rank["ranking_publication_id"])
         TickerDecisionRepository(runtime).publish(decision.model_copy(update={"opportunity_rank": rank}))
         panel = load_opportunities_scope_data(typed_config(migrated_postgres_dsn))
         assert panel.status.ready is True

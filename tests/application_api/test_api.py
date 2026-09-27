@@ -973,6 +973,7 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
     assert "inputs" not in decision["input_manifest"]
     assert set(decision) == {
         "as_of", "capital_action", "decision_contract_version", "decision_revision",
+        "evidence_state", "evidence_archive_manifest_id",
         "expressions", "fundamental", "input_manifest", "market_evidence_assessment", "reference_signal",
         "portfolio_impacts", "resolution", "selected_expression", "tactical", "ticker", "field_states",
     }

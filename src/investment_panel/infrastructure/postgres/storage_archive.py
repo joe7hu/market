@@ -32,7 +32,7 @@ from investment_panel.infrastructure.postgres.storage_guard import storage_capac
 # Only these phases have a production archive writer.  Publication and
 # derived detail is retained or recomputed locally; keeping them out of this
 # set prevents the CLI from advertising a writer that does not exist.
-ARCHIVE_KINDS = frozenset({"fundamental-history", "options", "option-scans", "decision-manifests", "publications"})
+ARCHIVE_KINDS = frozenset({"fundamental-history", "options", "option-scans", "ticker-decisions", "decision-manifests", "publications"})
 _JSON_ARCHIVE_KINDS = frozenset({"fundamental-history", "publications", "derived"})
 ARCHIVE_FREE_RESERVE_BYTES = 10 * 1024**3
 _ARCHIVE_DIRS = {

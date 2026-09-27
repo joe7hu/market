@@ -77,6 +77,11 @@ def test_complete_plan_publishes_without_incomplete_plan_or_partial_set(migrated
         assert result['blockers']
         rows = AnalysisRepository(runtime).publication_rows('ticker-outcome-attribution', 'outcome_attribution')
         assert len(rows) == 6
+        with runtime.read() as connection:
+            run_inputs = connection.execute("""SELECT run.inputs FROM analysis.run run
+                JOIN app.publication publication ON publication.analysis_run_id = run.id
+                WHERE publication.id = %s""", [result['attribution_publication_id']]).fetchone()['inputs']
+        assert run_inputs == {'outcome_attribution_ids': [row['outcome_attribution_id'] for row in rows]}
         assert {row['trade_plan_id'] for row in rows} == {'good'}
         assert all(not row['promotion_eligible'] for row in rows)
         replay = repository.publish_outcome_attributions(now=observed)

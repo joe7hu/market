@@ -16,12 +16,22 @@ def upgrade() -> None:
           ADD COLUMN evidence_normalized boolean NOT NULL DEFAULT false,
           ADD COLUMN semantic_fingerprint text,
           ADD COLUMN last_evaluated_at timestamptz,
+          ADD COLUMN ranking_publication_id uuid REFERENCES app.publication(id) ON DELETE RESTRICT,
+          ADD COLUMN ranking_ref_checked boolean NOT NULL DEFAULT false,
+          ADD COLUMN archived_input_refs jsonb NOT NULL DEFAULT '{}'::jsonb,
+          ADD COLUMN archived_context_refs jsonb NOT NULL DEFAULT '{}'::jsonb,
           ADD COLUMN evidence_state text NOT NULL DEFAULT 'local'
             CHECK (evidence_state IN ('local', 'archived', 'unavailable')),
           ADD COLUMN evidence_archive_manifest_id bigint
             REFERENCES ops.storage_archive_manifest(id) ON DELETE RESTRICT;
         CREATE INDEX ticker_decision_evidence_pending_idx ON analysis.ticker_decision(id)
           WHERE NOT evidence_normalized;
+        CREATE INDEX ticker_decision_ranking_publication_idx ON analysis.ticker_decision(ranking_publication_id)
+          WHERE ranking_publication_id IS NOT NULL;
+        CREATE INDEX ticker_decision_ranking_ref_pending_idx ON analysis.ticker_decision(id)
+          WHERE NOT ranking_ref_checked;
+        CREATE INDEX ticker_decision_evidence_local_age_idx ON analysis.ticker_decision(as_of, id)
+          WHERE evidence_state = 'local' AND status IN ('published', 'superseded');
         ALTER TABLE analysis.ticker_decision
           DROP CONSTRAINT ticker_decision_instrument_id_decision_revision_key;
         CREATE UNIQUE INDEX ticker_decision_semantic_revision_key
@@ -368,6 +378,180 @@ def upgrade() -> None:
           ON analysis.ticker_decision FOR EACH ROW
           EXECUTE FUNCTION analysis.check_decision_evidence_refs();
 
+        CREATE FUNCTION analysis.check_ticker_archive_state()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF TG_OP <> 'INSERT' AND OLD.evidence_state = 'archived' THEN
+            RAISE EXCEPTION 'archived ticker evidence is immutable';
+          END IF;
+          IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+          IF NEW.evidence_state = 'archived' THEN
+            IF NEW.evidence_archive_manifest_id IS NULL
+               OR NEW.input_payload_refs <> '{}'::jsonb
+               OR COALESCE(NEW.input_manifest->'inputs', '{}'::jsonb) <> '{}'::jsonb
+               OR jsonb_typeof(NEW.archived_input_refs) IS DISTINCT FROM 'object'
+               OR (TG_OP = 'UPDATE' AND NEW.archived_input_refs IS DISTINCT FROM OLD.input_payload_refs)
+               OR NEW.market_state_context_hash IS NOT NULL
+               OR NEW.risk_policy_context_hash IS NOT NULL
+               OR NEW.market_state_snapshot <> '{}'::jsonb
+               OR NEW.risk_policy_snapshot <> '{}'::jsonb
+               OR jsonb_typeof(NEW.archived_context_refs) IS DISTINCT FROM 'object'
+               OR (TG_OP = 'UPDATE' AND NEW.archived_context_refs IS DISTINCT FROM
+                   jsonb_strip_nulls(jsonb_build_object(
+                     'market', OLD.market_state_context_hash,
+                     'policy', OLD.risk_policy_context_hash)))
+               OR NOT EXISTS (
+                 SELECT 1 FROM ops.storage_archive_manifest manifest
+                 WHERE manifest.id = NEW.evidence_archive_manifest_id
+                   AND manifest.verification_status = 'verified'
+                   AND manifest.metadata->'source_row_ids' ? NEW.id::text
+               ) THEN
+              RAISE EXCEPTION 'ticker archive transition lacks verified exact source coverage';
+            END IF;
+          END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER ticker_decision_archive_state_valid
+          BEFORE INSERT OR UPDATE OR DELETE ON analysis.ticker_decision
+          FOR EACH ROW EXECUTE FUNCTION analysis.check_ticker_archive_state();
+
+        CREATE FUNCTION analysis.require_local_ticker_evidence()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE owner_id uuid; state text;
+        BEGIN
+          IF TG_TABLE_NAME = 'paper_order' THEN
+            IF NEW.ticker_decision_id IS NULL OR NEW.status IN
+               ('closed', 'cancelled', 'rejected', 'exited', 'invalidated') THEN RETURN NEW; END IF;
+            owner_id := NEW.ticker_decision_id;
+          ELSIF TG_TABLE_NAME = 'ticker_outcome' THEN
+            IF NEW.state <> 'observing' THEN RETURN NEW; END IF;
+            owner_id := NEW.ticker_decision_id;
+          ELSE
+            IF NEW.status NOT IN ('open', 'running') THEN RETURN NEW; END IF;
+            owner_id := NEW.ticker_decision_id;
+          END IF;
+          SELECT evidence_state INTO state FROM analysis.ticker_decision
+            WHERE id = owner_id FOR KEY SHARE;
+          IF state IS NOT NULL AND state <> 'local' THEN
+            RAISE EXCEPTION 'active ticker consumer requires local evidence';
+          END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER paper_order_ticker_evidence_local
+          BEFORE INSERT OR UPDATE OF ticker_decision_id, status ON app.paper_order
+          FOR EACH ROW EXECUTE FUNCTION analysis.require_local_ticker_evidence();
+        CREATE TRIGGER ticker_outcome_evidence_local
+          BEFORE INSERT OR UPDATE OF ticker_decision_id, state ON analysis.ticker_outcome
+          FOR EACH ROW EXECUTE FUNCTION analysis.require_local_ticker_evidence();
+        CREATE TRIGGER ticker_request_evidence_local
+          BEFORE INSERT OR UPDATE OF ticker_decision_id, status ON analysis.ticker_data_request
+          FOR EACH ROW EXECUTE FUNCTION analysis.require_local_ticker_evidence();
+
+        DROP TRIGGER decision_input_payload_immutable ON analysis.decision_input_payload;
+        CREATE FUNCTION analysis.restrict_decision_payload_mutation()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF TG_OP = 'DELETE'
+             AND current_setting('market.verified_decision_payload_gc', true) = 'on'
+             AND current_user = (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = TG_RELID)
+          THEN RETURN OLD; END IF;
+          RAISE EXCEPTION 'decision input payload is immutable outside verified maintenance';
+        END $$;
+        CREATE TRIGGER decision_input_payload_immutable
+          BEFORE UPDATE OR DELETE ON analysis.decision_input_payload
+          FOR EACH ROW EXECUTE FUNCTION analysis.restrict_decision_payload_mutation();
+
+        CREATE OR REPLACE FUNCTION analysis.reject_decision_context_mutation()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF TG_OP = 'DELETE'
+             AND current_setting('market.verified_decision_context_gc', true) = 'on'
+             AND current_user = (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = TG_RELID)
+          THEN RETURN OLD; END IF;
+          RAISE EXCEPTION 'decision context is immutable outside verified maintenance';
+        END $$;
+
+        CREATE FUNCTION analysis.gc_archived_decision_payloads(p_hashes text[])
+        RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+        DECLARE removed integer := 0;
+        BEGIN
+          IF cardinality(p_hashes) > 1000 OR EXISTS (
+            SELECT 1 FROM unnest(p_hashes) digest WHERE digest !~ '^[0-9a-f]{64}$'
+          ) THEN
+            RAISE EXCEPTION 'invalid or oversized decision payload GC batch';
+          END IF;
+          PERFORM pg_advisory_xact_lock(hashtextextended('market-decision-evidence-gc', 0));
+          LOCK TABLE analysis.ticker_decision IN SHARE MODE;
+          PERFORM set_config('market.verified_decision_payload_gc', 'on', true);
+          WITH live AS MATERIALIZED (
+            SELECT DISTINCT ref.digest
+            FROM analysis.ticker_decision decision
+            CROSS JOIN LATERAL (
+              SELECT value AS digest FROM jsonb_each_text(decision.input_payload_refs)
+              UNION ALL SELECT decision.evidence_refs->>'plan_impact'
+              UNION ALL SELECT decision.evidence_refs->>'resolution_impact'
+              UNION ALL SELECT value FROM jsonb_each_text(
+                COALESCE(decision.evidence_refs->'manifest', '{}'::jsonb))
+              UNION ALL SELECT value FROM jsonb_each_text(
+                COALESCE(decision.evidence_refs->'portfolio_impacts', '{}'::jsonb))
+            ) ref WHERE ref.digest = ANY(p_hashes)
+          ), archived AS MATERIALIZED (
+            SELECT ref.value AS digest,
+                   bool_and(decision.evidence_state = 'archived'
+                     AND manifest.verification_status = 'verified') AS covered
+            FROM analysis.ticker_decision decision
+            CROSS JOIN LATERAL jsonb_each_text(decision.archived_input_refs) ref
+            LEFT JOIN ops.storage_archive_manifest manifest
+              ON manifest.id = decision.evidence_archive_manifest_id
+            WHERE ref.value = ANY(p_hashes) GROUP BY ref.value
+          )
+          DELETE FROM analysis.decision_input_payload payload
+          USING archived
+          WHERE payload.content_hash = archived.digest AND archived.covered
+            AND NOT EXISTS (SELECT 1 FROM live WHERE live.digest = archived.digest);
+          GET DIAGNOSTICS removed = ROW_COUNT;
+          RETURN removed;
+        END $$;
+        REVOKE ALL ON FUNCTION analysis.gc_archived_decision_payloads(text[]) FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION analysis.gc_archived_decision_payloads(text[]) TO market_app;
+
+        CREATE FUNCTION analysis.gc_archived_decision_contexts(p_hashes text[])
+        RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+        DECLARE removed integer := 0;
+        BEGIN
+          IF cardinality(p_hashes) > 1000 OR EXISTS (
+            SELECT 1 FROM unnest(p_hashes) digest WHERE digest !~ '^[0-9a-f]{64}$'
+          ) THEN
+            RAISE EXCEPTION 'invalid or oversized decision context GC batch';
+          END IF;
+          PERFORM pg_advisory_xact_lock(hashtextextended('market-decision-evidence-gc', 0));
+          LOCK TABLE analysis.ticker_decision IN SHARE MODE;
+          PERFORM set_config('market.verified_decision_context_gc', 'on', true);
+          WITH live AS MATERIALIZED (
+            SELECT market_state_context_hash AS digest FROM analysis.ticker_decision
+              WHERE market_state_context_hash = ANY(p_hashes)
+            UNION SELECT risk_policy_context_hash FROM analysis.ticker_decision
+              WHERE risk_policy_context_hash = ANY(p_hashes)
+          ), archived AS MATERIALIZED (
+            SELECT ref.digest, bool_and(decision.evidence_state = 'archived'
+              AND manifest.verification_status = 'verified') AS covered
+            FROM analysis.ticker_decision decision
+            CROSS JOIN LATERAL (VALUES (decision.archived_context_refs->>'market'),
+                                       (decision.archived_context_refs->>'policy')) ref(digest)
+            LEFT JOIN ops.storage_archive_manifest manifest
+              ON manifest.id = decision.evidence_archive_manifest_id
+            WHERE ref.digest = ANY(p_hashes) GROUP BY ref.digest
+          )
+          DELETE FROM analysis.decision_context context
+          USING archived
+          WHERE context.content_hash = archived.digest AND archived.covered
+            AND NOT EXISTS (SELECT 1 FROM live WHERE live.digest = archived.digest);
+          GET DIAGNOSTICS removed = ROW_COUNT;
+          RETURN removed;
+        END $$;
+        REVOKE ALL ON FUNCTION analysis.gc_archived_decision_contexts(text[]) FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION analysis.gc_archived_decision_contexts(text[]) TO market_app;
+
         REVOKE ALL ON FUNCTION analysis.intern_decision_payload(jsonb) FROM PUBLIC;
         REVOKE ALL ON FUNCTION analysis.decision_payload(text) FROM PUBLIC;
         REVOKE ALL ON FUNCTION analysis.intern_decision_evidence(jsonb,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb) FROM PUBLIC;
@@ -401,12 +585,14 @@ def upgrade() -> None:
             d.input_manifest, d.opportunity_episode) AS resolution,
           d.policy_version, d.opportunity_episode_id, d.opportunity_cutoff,
           d.opportunity_episode, d.market_state_publication_id,
-          CASE WHEN d.market_state_context_hash IS NULL THEN d.market_state_snapshot
+          CASE WHEN d.evidence_state = 'archived' THEN NULL::jsonb
+               WHEN d.market_state_context_hash IS NULL THEN d.market_state_snapshot
                ELSE (SELECT context.payload FROM analysis.decision_context context
                      WHERE context.content_hash = d.market_state_context_hash)
           END AS market_state_snapshot,
           analysis.expand_decision_impacts(d.portfolio_impacts, d.evidence_refs) AS portfolio_impacts,
-          CASE WHEN d.risk_policy_context_hash IS NULL THEN d.risk_policy_snapshot
+          CASE WHEN d.evidence_state = 'archived' THEN NULL::jsonb
+               WHEN d.risk_policy_context_hash IS NULL THEN d.risk_policy_snapshot
                ELSE (SELECT context.payload FROM analysis.decision_context context
                      WHERE context.content_hash = d.risk_policy_context_hash)
           END AS risk_policy_snapshot,
@@ -447,7 +633,7 @@ def downgrade() -> None:
     """).scalar():
         raise RuntimeError("same-revision decision changes must be reconciled before downgrading")
     if op.get_bind().exec_driver_sql(
-        "SELECT EXISTS (SELECT 1 FROM analysis.ticker_decision WHERE evidence_normalized)"
+        "SELECT EXISTS (SELECT 1 FROM analysis.ticker_decision WHERE evidence_normalized OR evidence_state = 'archived')"
     ).scalar():
         raise RuntimeError("restore inline decision evidence before downgrading")
     _switch_phase4_readers("analysis.ticker_decision_read", "analysis.ticker_decision")
@@ -463,6 +649,19 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION analysis.require_local_primary_option_scan()")
     op.execute("DROP FUNCTION analysis.require_local_option_evidence()")
     op.execute("DROP VIEW analysis.ticker_decision_read")
+    op.execute("DROP TRIGGER paper_order_ticker_evidence_local ON app.paper_order")
+    op.execute("DROP TRIGGER ticker_outcome_evidence_local ON analysis.ticker_outcome")
+    op.execute("DROP TRIGGER ticker_request_evidence_local ON analysis.ticker_data_request")
+    op.execute("DROP FUNCTION analysis.require_local_ticker_evidence()")
+    op.execute("DROP TRIGGER ticker_decision_archive_state_valid ON analysis.ticker_decision")
+    op.execute("DROP FUNCTION analysis.check_ticker_archive_state()")
+    op.execute("DROP FUNCTION analysis.gc_archived_decision_payloads(text[])")
+    op.execute("DROP FUNCTION analysis.gc_archived_decision_contexts(text[])")
+    op.execute("""CREATE OR REPLACE FUNCTION analysis.reject_decision_context_mutation()
+        RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'decision context is immutable'; END $$""")
+    op.execute("DROP TRIGGER decision_input_payload_immutable ON analysis.decision_input_payload")
+    op.execute("DROP FUNCTION analysis.restrict_decision_payload_mutation()")
+    op.execute("CREATE TRIGGER decision_input_payload_immutable BEFORE UPDATE OR DELETE ON analysis.decision_input_payload FOR EACH ROW EXECUTE FUNCTION analysis.reject_decision_context_mutation()")
     op.execute("DROP TRIGGER ticker_decision_evidence_refs_valid ON analysis.ticker_decision")
     op.execute("DROP FUNCTION analysis.check_decision_evidence_refs()")
     op.execute("DROP FUNCTION analysis.intern_decision_evidence(jsonb,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb)")
@@ -478,7 +677,7 @@ def downgrade() -> None:
     op.execute("ALTER TABLE app.publication_bundle_item DROP COLUMN canonical_publication_id")
     op.execute("ALTER TABLE analysis.decision_evidence DROP COLUMN evidence_state, DROP COLUMN evidence_archive_manifest_id")
     op.execute("ALTER TABLE analysis.option_decision DROP COLUMN evidence_state, DROP COLUMN evidence_archive_manifest_id")
-    op.execute("ALTER TABLE analysis.ticker_decision DROP COLUMN evidence_refs, DROP COLUMN evidence_normalized, DROP COLUMN semantic_fingerprint, DROP COLUMN last_evaluated_at, DROP COLUMN evidence_state, DROP COLUMN evidence_archive_manifest_id")
+    op.execute("ALTER TABLE analysis.ticker_decision DROP COLUMN evidence_refs, DROP COLUMN evidence_normalized, DROP COLUMN semantic_fingerprint, DROP COLUMN last_evaluated_at, DROP COLUMN ranking_publication_id, DROP COLUMN ranking_ref_checked, DROP COLUMN archived_input_refs, DROP COLUMN archived_context_refs, DROP COLUMN evidence_state, DROP COLUMN evidence_archive_manifest_id")
     op.execute("ALTER TABLE analysis.ticker_decision ADD CONSTRAINT ticker_decision_instrument_id_decision_revision_key UNIQUE (instrument_id, decision_revision)")
     from importlib import import_module
     old = import_module("migrations.versions.20260924_0036_hot_storage")

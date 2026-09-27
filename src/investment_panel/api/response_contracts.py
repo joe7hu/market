@@ -1278,6 +1278,8 @@ class TickerDecisionDetailResponse(BaseModel):
     ticker: str
     as_of: datetime
     decision_revision: str
+    evidence_state: str = "local"
+    evidence_archive_manifest_id: int | None = None
     tactical: HorizonDecision
     fundamental: HorizonDecision
     capital_action: CapitalAction

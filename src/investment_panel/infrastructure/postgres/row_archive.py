@@ -23,6 +23,7 @@ RELATIONS = frozenset({
     "raw.option_quote", "analysis.option_relative_value", "analysis.run",
     "analysis.option_relative_value_verification",
     "analysis.ticker_decision", "analysis.option_decision", "analysis.decision_evidence",
+    "analysis.decision_input_payload", "analysis.decision_context", "analysis.strategy_forecast",
     "analysis.option_feature", "analysis.decision", "raw.option_snapshot",
     "catalog.option_contract", "app.publication", "app.publication_bundle",
     "app.publication_bundle_item", "app.publication_payload", "app.publication_item",

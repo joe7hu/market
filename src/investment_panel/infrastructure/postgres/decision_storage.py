@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 from typing import Any, Mapping
+from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
@@ -21,6 +22,83 @@ from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JO
 CONTEXT_COLUMNS = ("market_state_snapshot", "risk_policy_snapshot")
 MAX_CONTEXT_BATCH_BYTES = 64 * 1024**2
 MAX_EVIDENCE_BATCH_BYTES = 64 * 1024**2
+
+
+def lock_decision_evidence_writer(connection: Any) -> None:
+    connection.execute("SELECT pg_advisory_xact_lock_shared(hashtextextended(%s, 0))",
+                       ["market-decision-evidence-gc"])
+
+
+def ranking_publication_reference(*values: Any) -> UUID | None:
+    """Resolve one exact plan/rank publication identity, including legacy local IDs."""
+    found: set[UUID | str] = set()
+    for value in values:
+        if not value:
+            continue
+        raw = str(value)
+        try:
+            found.add(UUID(raw))
+        except ValueError:
+            found.add(raw)
+    if len(found) > 1:
+        raise ValueError("plan and rank publication references conflict")
+    only = next(iter(found), None)
+    return only if isinstance(only, UUID) else None
+
+
+def backfill_ranking_publication_refs(
+    runtime: DatabaseRuntime, *, batch_size: int = 25, execute: bool = False,
+) -> dict[str, Any]:
+    """Index exact legacy plan references before ranking publication retention."""
+    if not 1 <= batch_size <= 100:
+        raise ValueError("ranking reference batch_size must be between 1 and 100")
+    with runtime.transaction(JOB_PROFILE) if execute else runtime.read(JOB_PROFILE) as connection:
+        if not execute:
+            remaining = connection.execute(
+                "SELECT count(*) AS n FROM analysis.ticker_decision WHERE NOT ranking_ref_checked"
+            ).fetchone()["n"]
+            return {"phase": "ranking-refs", "dry_run": True, "remaining": int(remaining)}
+        candidates = connection.execute("""SELECT id FROM analysis.ticker_decision
+            WHERE NOT ranking_ref_checked ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED""",
+            [batch_size]).fetchall()
+        consumed = checked = 0
+        for candidate in candidates:
+            decision_id = candidate["id"]
+            before = connection.execute("""SELECT expanded.input_manifest::text AS manifest,
+                expanded.input_manifest->'trade_plan'->>'publication_id' AS plan_publication_id,
+                expanded.input_manifest->'opportunity_rank'->>'ranking_publication_id' AS rank_publication_id,
+                expanded.input_manifest->'opportunity_rank'->>'publication_id' AS rank_alias_id,
+                decision.ranking_publication_id AS indexed_id
+                FROM analysis.ticker_decision_read expanded
+                JOIN analysis.ticker_decision decision ON decision.id = expanded.id
+                WHERE expanded.id = %s""", [decision_id]).fetchone()
+            size = len(before["manifest"].encode("utf-8"))
+            if consumed + size > MAX_EVIDENCE_BATCH_BYTES:
+                if not checked:
+                    raise ValueError("individual ranking reference exceeds the 64 MiB maintenance budget")
+                break
+            publication_id = ranking_publication_reference(
+                before["plan_publication_id"], before["rank_publication_id"],
+                before["rank_alias_id"],
+            )
+            if before["indexed_id"] is not None and before["indexed_id"] != publication_id:
+                raise ValueError("ranking publication reference conflicts with exact legacy plan; batch rolled back")
+            if publication_id is not None and connection.execute(
+                "SELECT 1 FROM app.publication WHERE id = %s AND scope = 'ticker-opportunity-ranking'",
+                [publication_id],
+            ).fetchone() is None:
+                raise ValueError(f"ranking publication {publication_id} is missing or has the wrong scope; batch rolled back")
+            connection.execute("""UPDATE analysis.ticker_decision
+                SET ranking_publication_id = %s, ranking_ref_checked = true WHERE id = %s""",
+                [publication_id, decision_id])
+            after = connection.execute("SELECT input_manifest::text AS manifest FROM analysis.ticker_decision_read WHERE id = %s",
+                                       [decision_id]).fetchone()
+            if before["manifest"] != after["manifest"]:
+                raise ValueError("ranking reference changed decision read; batch rolled back")
+            consumed += size
+            checked += 1
+    return {"phase": "ranking-refs", "dry_run": False, "checked": checked,
+            "input_bytes_processed": consumed}
 
 
 def require_maintenance_headroom(*, minimum_bytes: int) -> None:
@@ -80,6 +158,7 @@ def compact_context_batch(runtime: DatabaseRuntime, *, batch_size: int = 25, exe
             ).fetchone()
             return {"phase": "decision-context", "dry_run": True, "remaining": int(row["remaining"]),
                     "filesystem_reclaim": "not_until_separate_compaction"}
+        lock_decision_evidence_writer(connection)
         candidates = connection.execute(
             f"""SELECT id,
                        COALESCE(octet_length(market_state_snapshot::text), 0)
@@ -141,6 +220,7 @@ def compact_decision_evidence_batch(
                 "SELECT count(*) AS n FROM analysis.ticker_decision WHERE NOT evidence_normalized"
             ).fetchone()["n"]
             return {"phase": "decision-evidence", "dry_run": True, "remaining": int(remaining)}
+        lock_decision_evidence_writer(connection)
         candidates = connection.execute("""
             SELECT id, octet_length(input_manifest::text) + octet_length(resolution::text)
                  + octet_length(capital_action::text)

@@ -51,7 +51,7 @@ from investment_panel.domain.decision import (
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.infrastructure.postgres.options_paper_quotes import is_credit_structure, package_price
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
-from investment_panel.infrastructure.postgres.decision_storage import store_context
+from investment_panel.infrastructure.postgres.decision_storage import lock_decision_evidence_writer, ranking_publication_reference, store_context
 from investment_panel.infrastructure.postgres.decision_inputs import intern_input_manifest
 from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
 from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime, JOB_PROFILE
@@ -456,6 +456,7 @@ class TickerDecisionRepository:
             "reference_signal": payload.get("reference_signal"),
         }
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            lock_decision_evidence_writer(connection)
             instrument = connection.execute(
                 "SELECT id FROM catalog.instrument WHERE symbol = %s LIMIT 1",
                 [decision.ticker],
@@ -562,6 +563,18 @@ class TickerDecisionRepository:
                   Jsonb(payload.get("portfolio_impacts") or {})]).fetchone()
             market_context_hash = store_context(connection, payload.get("market_state_snapshot"))
             policy_context_hash = store_context(connection, payload.get("risk_policy_snapshot"))
+            ranking_id = ranking_publication_reference(
+                plan.publication_id if plan is not None else None,
+                _signal_field(decision.opportunity_rank, "ranking_publication_id"),
+                _signal_field(decision.opportunity_rank, "publication_id"),
+            )
+            ranking_found = (connection.execute(
+                "SELECT id FROM app.publication WHERE id = %s AND scope = %s FOR KEY SHARE",
+                [ranking_id, TICKER_RANKING_SCOPE],
+            ).fetchone() if ranking_id is not None else None)
+            if ranking_id is not None and ranking_found is None:
+                raise ValueError("referenced ranking publication is missing")
+            ranking_checked = True
             row = connection.execute(
                 """
                 INSERT INTO analysis.ticker_decision (
@@ -574,11 +587,11 @@ class TickerDecisionRepository:
                     market_state_snapshot, portfolio_impacts, risk_policy_snapshot,
                     market_state_context_hash, risk_policy_context_hash, input_payload_refs, inputs_normalized,
                     evidence_refs, evidence_normalized, semantic_fingerprint,
-                    last_evaluated_at, status
+                    last_evaluated_at, ranking_publication_id, ranking_ref_checked, status
                 ) VALUES (
                     %s, %s, %s, %s, now(), %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s::jsonb, true, %s::jsonb, true, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s::jsonb, true, %s::jsonb, true, %s, %s, %s, %s, %s
                 )
                 RETURNING id::text
                 """,
@@ -601,7 +614,7 @@ class TickerDecisionRepository:
                     evidence["impacts"],
                     Jsonb({}),
                     market_context_hash, policy_context_hash, input_refs, evidence["refs"],
-                    fingerprint, decision.as_of,
+                    fingerprint, decision.as_of, ranking_id, ranking_checked,
                     "superseded" if prior is not None and decision.as_of < prior["as_of"] else "published",
                 ],
             ).fetchone()
@@ -1828,7 +1841,7 @@ class TickerDecisionRepository:
             "ticker_outcome_attribution",
             input_cutoff=reference,
             code_version=attributions[0].evaluation_version,
-            inputs={"outcome_attributions": models},
+            inputs={"outcome_attribution_ids": [item.outcome_attribution_id for item in attributions]},
             feature_versions={"outcome_attribution": attributions[0].evaluation_version},
         )
         publication_id = analysis.publish(
@@ -2884,6 +2897,8 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "ticker": ticker,
         "as_of": row["as_of"],
         "decision_revision": row["decision_revision"],
+        "evidence_state": row.get("evidence_state", "local"),
+        "evidence_archive_manifest_id": row.get("evidence_archive_manifest_id"),
         "tactical": row["tactical"],
         "fundamental": row["fundamental"],
         "capital_action": capital_action_from_resolution(resolution),

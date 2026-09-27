@@ -160,24 +160,18 @@ class RetentionRepository:
             raise ValueError("publication batch size must be 1..100 and days positive")
         rolling_cutoff = _trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS)
         with self.runtime.transaction(SCHEDULED_PUBLICATION_PROFILE if candidate_ids is not None else JOB_PROFILE) as connection:
-            candidates = candidate_ids if candidate_ids is not None else _publication_candidates(
+            candidates = _publication_candidates(
                 connection, standard_cutoff=reference - timedelta(days=publication_days),
                 rolling_cutoff=rolling_cutoff, limit=None if dry_run else batch_size,
+                candidate_ids=candidate_ids,
             )
             if candidates:
-                # ponytail: Scope pin keeps legacy plan publication references safe;
-                # backfill indexed decision references before pruning these scopes.
-                protected_scopes = {row["id"] for row in connection.execute(
-                    "SELECT id FROM app.publication WHERE id = ANY(%s) "
-                    "AND scope IN ('ticker-opportunity-ranking', 'ticker-outcome-attribution')",
-                    [candidates],
-                ).fetchall()}
                 referenced = {row["canonical_publication_id"] for row in connection.execute(
                     "SELECT DISTINCT canonical_publication_id FROM app.publication_bundle_item "
                     "WHERE canonical_publication_id = ANY(%s)", [candidates],
                 ).fetchall()}
                 candidates = [candidate for candidate in candidates
-                              if candidate not in referenced and candidate not in protected_scopes]
+                              if candidate not in referenced]
             count = len(candidates)
             compact_counts = {}
             if not dry_run and candidates:
@@ -253,9 +247,11 @@ def _publication_candidates(
     standard_cutoff: datetime,
     rolling_cutoff: datetime,
     limit: int | None,
+    candidate_ids: list[Any] | None = None,
 ) -> list[Any]:
     """Return superseded generations eligible for one bounded retention pass."""
 
+    selection = "" if candidate_ids is None else "AND ranked.id = ANY(%s)"
     suffix = "" if limit is None else "LIMIT %s"
     parameters: list[Any] = [
         MARKET_PUBLICATION_SUPERSEDED_LIMIT,
@@ -265,6 +261,8 @@ def _publication_candidates(
         ["market", *ROLLING_PUBLICATION_SCOPES],
         standard_cutoff,
     ]
+    if candidate_ids is not None:
+        parameters.append(candidate_ids)
     if limit is not None:
         parameters.append(limit)
     rows = connection.execute(
@@ -279,7 +277,7 @@ def _publication_candidates(
                    ) AS superseded_rank
             FROM app.publication
             WHERE status = 'superseded'
-              AND scope NOT IN ('ticker-opportunity-ranking', 'ticker-outcome-attribution')
+              AND scope <> 'ticker-outcome-attribution'
         )
         SELECT id
         FROM ranked
@@ -293,10 +291,16 @@ def _publication_candidates(
               FROM analysis.ticker_decision decision
               WHERE decision.market_state_publication_id = ranked.id
           )
+          AND (scope <> 'ticker-opportunity-ranking' OR (
+              NOT EXISTS (SELECT 1 FROM analysis.ticker_decision WHERE NOT ranking_ref_checked)
+              AND NOT EXISTS (SELECT 1 FROM analysis.ticker_decision decision
+                              WHERE decision.ranking_publication_id = ranked.id)
+          ))
           AND NOT EXISTS (
               SELECT 1 FROM app.publication_bundle_item item
               WHERE item.canonical_publication_id = ranked.id
           )
+          {selection}
         ORDER BY generation_at, id
         {suffix}
         """,

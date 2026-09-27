@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 from psycopg.types.json import Jsonb
 
-from investment_panel.infrastructure.postgres.decision_storage import require_maintenance_headroom
+from investment_panel.infrastructure.postgres.decision_storage import lock_decision_evidence_writer, require_maintenance_headroom
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
 
 MAX_INPUT_BATCH_BYTES = 64 * 1024**2
@@ -27,6 +27,7 @@ def compact_input_batch(runtime: DatabaseRuntime, *, batch_size: int = 25, execu
         if not execute:
             row = connection.execute("SELECT count(*) AS remaining FROM analysis.ticker_decision WHERE NOT inputs_normalized").fetchone()
             return {"phase": "decision-inputs", "dry_run": True, "remaining": int(row["remaining"])}
+        lock_decision_evidence_writer(connection)
         rows = connection.execute("""
             SELECT id, octet_length(input_manifest::text) AS bytes FROM analysis.ticker_decision
             WHERE NOT inputs_normalized ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED

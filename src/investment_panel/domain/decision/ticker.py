@@ -16,7 +16,7 @@ from enum import StrEnum
 import hashlib
 import json
 import math
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -2153,6 +2153,8 @@ class TickerDecision(BaseModel):
     ticker: str
     as_of: datetime
     decision_revision: str
+    evidence_state: Literal["local", "archived", "unavailable"] = "local"
+    evidence_archive_manifest_id: int | None = None
     tactical: HorizonDecision
     fundamental: HorizonDecision
     capital_action: CapitalAction

@@ -10,18 +10,21 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
+from uuid import uuid4
 
 import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.infrastructure.postgres.decision_inputs import compact_input_batch
+from investment_panel.infrastructure.postgres.decision_storage import store_context
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.hot_retention import HotRetention
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
 from investment_panel.infrastructure.postgres.row_archive import RowArchive, MAX_PACK_BYTES
 from investment_panel.infrastructure.postgres.option_evidence_archive import OptionEvidenceArchive
+from investment_panel.infrastructure.postgres.ticker_evidence_archive import TickerEvidenceArchive
 from investment_panel.infrastructure.postgres.archive_io import MAX_CHUNK_BYTES
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
@@ -54,6 +57,20 @@ def _decision(runtime, revision, manifest):
             VALUES (%s, %s, 'test', now(), %s, 'test', 'test', '{}', '{}', '{}', '{}', %s::jsonb)
             RETURNING id
         """, [instrument_id, revision, "a" * 64, manifest]).fetchone()["id"]
+
+
+def _complete_ticker(runtime, decision_id):
+    with runtime.transaction() as connection:
+        connection.execute("""UPDATE analysis.ticker_decision
+            SET ranking_ref_checked = true, evidence_normalized = true WHERE id = %s""",
+                           [decision_id])
+        for horizon, sessions in (("TACTICAL", (1, 5, 20)), ("FUNDAMENTAL", (63, 126, 252))):
+            for horizon_sessions in sessions:
+                connection.execute("""INSERT INTO analysis.ticker_outcome
+                    (ticker_decision_id, horizon, horizon_sessions, state)
+                    VALUES (%s, %s, %s, 'resolved')
+                    ON CONFLICT (ticker_decision_id, horizon, horizon_sessions)
+                    DO UPDATE SET state = 'resolved'""", [decision_id, horizon, horizon_sessions])
 
 
 def test_application_role_can_intern_decision_and_write_accounting(storage):
@@ -220,6 +237,348 @@ def _verified_backup(storage):
                                                   "created_at": datetime.now(UTC).isoformat(),
                                                   "format": "postgresql-custom"}))
     return token
+
+
+@pytest.mark.parametrize("copy_pack", [False, True])
+def test_completed_ticker_evidence_archives_exact_inputs_and_restores_typed_rows(
+    storage, migrated_postgres_dsn, monkeypatch, copy_pack,
+):
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    old = _decision(storage.runtime, "ticker-archive-old", Jsonb({
+        "inputs": {"quote": {"source_id": "provider", "revision": "first", "raw": "x" * 4000}},
+        "source_versions": {"quote": "first"},
+    }))
+    _decision(storage.runtime, "ticker-archive-new", Jsonb({"inputs": {"quote": {"raw": "new"}}}))
+    _complete_ticker(storage.runtime, old)
+    with storage.runtime.transaction() as connection:
+        connection.execute("""UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded'
+            WHERE id = %s""", [now - timedelta(days=40), old])
+        context_hash = store_context(connection, {"revision": "market-first", "raw": "m" * 3000})
+        connection.execute("""UPDATE analysis.ticker_decision
+            SET market_state_context_hash = %s, market_state_snapshot = '{}'::jsonb
+            WHERE id = %s""", [context_hash, old])
+    assert compact_input_batch(storage.runtime, execute=True)["compacted"] == 2
+    if copy_pack:
+        monkeypatch.setattr("investment_panel.infrastructure.postgres.row_archive.MAX_PACK_BYTES", 1024)
+    archive = TickerEvidenceArchive(storage)
+    assert archive.run(now=now)["eligible"] == 1
+    with storage.runtime.read() as connection:
+        original = connection.execute("SELECT to_jsonb(decision)::text AS row_json FROM analysis.ticker_decision decision WHERE id = %s",
+                                      [old]).fetchone()["row_json"]
+    result = archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    assert result["archived"] == 1
+    with storage.runtime.read() as connection:
+        compact = connection.execute("""SELECT evidence_state, evidence_archive_manifest_id,
+            input_manifest, input_payload_refs, archived_input_refs,
+            archived_context_refs, market_state_context_hash
+            FROM analysis.ticker_decision WHERE id = %s""", [old]).fetchone()
+    assert compact["evidence_state"] == "archived"
+    assert compact["evidence_archive_manifest_id"] == result["manifest_id"]
+    assert compact["input_manifest"]["inputs"] == {}
+    assert compact["input_payload_refs"] == {}
+    assert compact["archived_input_refs"]
+    assert compact["archived_context_refs"]["market"] == context_hash
+    assert compact["market_state_context_hash"] is None
+    collected = archive.collect_for_decision(old, execute=True, backup_token=_verified_backup(storage))
+    assert collected["payloads_released"] == 1
+    assert collected["contexts_released"] == 1
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT count(*) AS n FROM analysis.decision_input_payload WHERE content_hash = %s",
+                                  [next(iter(compact["archived_input_refs"].values()))]).fetchone()["n"] == 0
+        assert connection.execute("SELECT count(*) AS n FROM analysis.decision_context WHERE content_hash = %s",
+                                  [context_hash]).fetchone()["n"] == 0
+    assert archive.full_evidence(old) == {"status": "archived", "archive_manifest_id": result["manifest_id"]}
+    with pytest.raises(psycopg.errors.RaiseException, match="active ticker consumer requires local evidence"):
+        with psycopg.connect(migrated_postgres_dsn) as connection:
+            connection.execute("""INSERT INTO app.paper_order
+                (ticker_decision_id, instrument_id, side, quantity, status)
+                SELECT id, instrument_id, 'buy', 1, 'open'
+                FROM analysis.ticker_decision WHERE id = %s""", [old])
+    with pytest.raises(psycopg.errors.RaiseException, match="active ticker consumer requires local evidence"):
+        with psycopg.connect(migrated_postgres_dsn) as connection:
+            connection.execute("""INSERT INTO analysis.ticker_outcome
+                (ticker_decision_id, horizon, horizon_sessions, state)
+                VALUES (%s, 'TACTICAL', 1, 'observing')""", [old])
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("DELETE FROM analysis.ticker_outcome WHERE ticker_decision_id = %s", [old])
+        connection.execute("ALTER TABLE analysis.ticker_decision DISABLE TRIGGER ticker_decision_archive_state_valid")
+        connection.execute("DELETE FROM analysis.ticker_decision WHERE id = %s", [old])
+        connection.execute("ALTER TABLE analysis.ticker_decision ENABLE TRIGGER ticker_decision_archive_state_valid")
+    receipt = archive.restore_decision(old, manifest_id=result["manifest_id"],
+                                       destination_dsn=migrated_postgres_dsn)
+    assert receipt["typed_rows"]["analysis.ticker_decision"] == 1
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        restored = connection.execute(f"SELECT to_jsonb(decision)::text FROM {receipt['staging_schema']}.analysis_ticker_decision decision").fetchone()[0]
+    assert restored == original
+
+
+def test_ticker_archive_keeps_shared_input_for_current_decision(storage):
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    manifest = Jsonb({"inputs": {"quote": {"raw": "shared" * 1000}}})
+    old = _decision(storage.runtime, "ticker-shared-old", manifest)
+    current = _decision(storage.runtime, "ticker-shared-new", manifest)
+    _complete_ticker(storage.runtime, old)
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded' WHERE id = %s",
+                           [now - timedelta(days=40), old])
+    compact_input_batch(storage.runtime, execute=True)
+    with storage.runtime.read() as connection:
+        old_hash = connection.execute("SELECT input_payload_refs->>'quote' AS hash FROM analysis.ticker_decision WHERE id = %s",
+                                      [old]).fetchone()["hash"]
+    result = TickerEvidenceArchive(storage).run(now=now, execute=True, backup_token=_verified_backup(storage))
+    assert result["archived"] == 1
+    assert TickerEvidenceArchive(storage).collect_for_decision(
+        old, execute=True, backup_token=_verified_backup(storage))["payloads_released"] == 0
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT count(*) AS n FROM analysis.decision_input_payload WHERE content_hash = %s",
+                                  [old_hash]).fetchone()["n"] == 1
+        assert connection.execute("SELECT input_payload_refs->>'quote' AS hash FROM analysis.ticker_decision WHERE id = %s",
+                                  [current]).fetchone()["hash"] == old_hash
+    assert TickerEvidenceArchive(storage).full_evidence(current)["status"] == "complete"
+
+
+def test_ticker_archive_missing_input_dependency_keeps_source(storage, migrated_postgres_dsn):
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    old = _decision(storage.runtime, "ticker-missing-old", Jsonb({"inputs": {"quote": {"raw": "x" * 4000}}}))
+    _decision(storage.runtime, "ticker-missing-new", Jsonb({"inputs": {"quote": {"raw": "new"}}}))
+    _complete_ticker(storage.runtime, old)
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded' WHERE id = %s",
+                           [now - timedelta(days=40), old])
+    compact_input_batch(storage.runtime, execute=True)
+    with storage.runtime.read() as connection:
+        digest = connection.execute("SELECT input_payload_refs->>'quote' AS hash FROM analysis.ticker_decision WHERE id = %s",
+                                    [old]).fetchone()["hash"]
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("ALTER TABLE analysis.decision_input_payload DISABLE TRIGGER decision_input_payload_immutable")
+        connection.execute("DELETE FROM analysis.decision_input_payload WHERE content_hash = %s", [digest])
+        connection.execute("ALTER TABLE analysis.decision_input_payload ENABLE TRIGGER decision_input_payload_immutable")
+    with pytest.raises(psycopg.errors.RaiseException, match="missing immutable decision input payload"):
+        TickerEvidenceArchive(storage).run(now=now, execute=True, backup_token=_verified_backup(storage))
+    assert TickerEvidenceArchive(storage).full_evidence(old) == {
+        "status": "unavailable", "reason": "local_dependency_missing",
+    }
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.ticker_decision WHERE id = %s",
+                                  [old]).fetchone()["evidence_state"] == "local"
+
+
+def test_ticker_archive_waits_for_rank_backfill_and_all_outcomes(storage):
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    old = _decision(storage.runtime, "ticker-incomplete-old", Jsonb({"inputs": {"quote": {"raw": "old"}}}))
+    _decision(storage.runtime, "ticker-incomplete-new", Jsonb({"inputs": {"quote": {"raw": "new"}}}))
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded' WHERE id = %s",
+                           [now - timedelta(days=40), old])
+    archive = TickerEvidenceArchive(storage)
+    assert archive.run(now=now)["archived"] == 0
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET ranking_ref_checked = true WHERE id = %s", [old])
+        connection.execute("""INSERT INTO analysis.ticker_outcome
+            (ticker_decision_id, horizon, horizon_sessions, state)
+            VALUES (%s, 'TACTICAL', 1, 'resolved')""", [old])
+    assert archive.run(now=now)["archived"] == 0
+    _complete_ticker(storage.runtime, old)
+    assert archive.run(now=now)["archived"] == 0
+    compact_input_batch(storage.runtime, execute=True)
+    assert archive.run(now=now)["eligible"] == 1
+
+
+def test_ticker_full_evidence_reports_missing_local_context(storage, migrated_postgres_dsn):
+    decision_id = _decision(storage.runtime, "ticker-missing-context", Jsonb({"inputs": {}}))
+    with storage.runtime.transaction() as connection:
+        digest = store_context(connection, {"revision": "exact-context"})
+        connection.execute("UPDATE analysis.ticker_decision SET market_state_context_hash = %s WHERE id = %s",
+                           [digest, decision_id])
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("ALTER TABLE analysis.decision_context DISABLE TRIGGER ALL")
+        connection.execute("DELETE FROM analysis.decision_context WHERE content_hash = %s", [digest])
+        connection.execute("ALTER TABLE analysis.decision_context ENABLE TRIGGER ALL")
+    assert TickerEvidenceArchive(storage).full_evidence(decision_id) == {
+        "status": "unavailable", "reason": "local_dependency_missing",
+    }
+
+
+def test_ticker_archive_requires_rank_forecast_dependency(storage):
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    old = _decision(storage.runtime, "ticker-rank-forecast-old", Jsonb({
+        "inputs": {}, "opportunity_rank": {"strategy_forecast_id": str(uuid4())},
+    }))
+    _decision(storage.runtime, "ticker-rank-forecast-new", Jsonb({"inputs": {}}))
+    _complete_ticker(storage.runtime, old)
+    compact_input_batch(storage.runtime, execute=True)
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded' WHERE id = %s",
+                           [now - timedelta(days=40), old])
+    with pytest.raises(ValueError, match="strategy_forecast"):
+        TickerEvidenceArchive(storage).run(now=now, execute=True, backup_token=_verified_backup(storage))
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.ticker_decision WHERE id = %s",
+                                  [old]).fetchone()["evidence_state"] == "local"
+
+
+@pytest.mark.parametrize("failure", ["interrupt", "corrupt"])
+def test_ticker_archive_failed_verification_keeps_source(storage, monkeypatch, failure):
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    old = _decision(storage.runtime, "ticker-failure-old", Jsonb({"inputs": {"quote": {"raw": "old"}}}))
+    _decision(storage.runtime, "ticker-failure-new", Jsonb({"inputs": {"quote": {"raw": "new"}}}))
+    _complete_ticker(storage.runtime, old)
+    compact_input_batch(storage.runtime, execute=True)
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded' WHERE id = %s",
+                           [now - timedelta(days=40), old])
+    archive = TickerEvidenceArchive(storage)
+    if failure == "interrupt":
+        monkeypatch.setattr(archive, "restore_decision", Mock(side_effect=RuntimeError("interrupted")))
+        expected = RuntimeError
+    else:
+        dependencies = archive._dependencies
+
+        def corrupt(connection, rows):
+            packs, hashes, contexts = dependencies(connection, rows)
+            manifest = connection.execute("SELECT nas_uri FROM ops.storage_archive_manifest WHERE id = %s",
+                                          [packs["analysis.ticker_decision"][0]]).fetchone()
+            Path(manifest["nas_uri"]).write_bytes(b"corrupt")
+            return packs, hashes, contexts
+
+        monkeypatch.setattr(archive, "_dependencies", corrupt)
+        expected = ValueError
+    with pytest.raises(expected):
+        archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.ticker_decision WHERE id = %s",
+                                  [old]).fetchone()["evidence_state"] == "local"
+
+
+def test_concurrent_ticker_order_keeps_source_local(storage, migrated_postgres_dsn):
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    old = _decision(storage.runtime, "ticker-concurrent-old", Jsonb({"inputs": {"quote": {"raw": "old"}}}))
+    _decision(storage.runtime, "ticker-concurrent-new", Jsonb({"inputs": {"quote": {"raw": "new"}}}))
+    _complete_ticker(storage.runtime, old)
+    compact_input_batch(storage.runtime, execute=True)
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded' WHERE id = %s",
+                           [now - timedelta(days=40), old])
+    inserted, commit = Event(), Event()
+
+    def add_order():
+        with psycopg.connect(migrated_postgres_dsn) as connection:
+            connection.execute("""INSERT INTO app.paper_order
+                (ticker_decision_id, instrument_id, side, quantity, status)
+                SELECT id, instrument_id, 'buy', 1, 'open'
+                FROM analysis.ticker_decision WHERE id = %s""", [old])
+            inserted.set()
+            assert commit.wait(10)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(add_order)
+        if not inserted.wait(5):
+            writer.result(timeout=1)
+            pytest.fail("concurrent ticker order was not inserted")
+        archiver = executor.submit(TickerEvidenceArchive(storage).run, now=now, execute=True,
+                                   backup_token=_verified_backup(storage))
+        try:
+            assert archiver.result(timeout=5)["archived"] == 0
+        finally:
+            commit.set()
+        writer.result(timeout=5)
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.ticker_decision WHERE id = %s",
+                                  [old]).fetchone()["evidence_state"] == "local"
+
+
+def test_concurrent_ticker_outcome_update_keeps_source_local(storage, migrated_postgres_dsn):
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    old = _decision(storage.runtime, "ticker-outcome-old", Jsonb({"inputs": {"quote": {"raw": "old"}}}))
+    _decision(storage.runtime, "ticker-outcome-new", Jsonb({"inputs": {"quote": {"raw": "new"}}}))
+    _complete_ticker(storage.runtime, old)
+    compact_input_batch(storage.runtime, execute=True)
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded' WHERE id = %s",
+                           [now - timedelta(days=40), old])
+    changed, commit = Event(), Event()
+
+    def reopen_outcome():
+        with psycopg.connect(migrated_postgres_dsn) as connection:
+            connection.execute("""UPDATE analysis.ticker_outcome SET state = 'observing'
+                WHERE ticker_decision_id = %s AND horizon = 'TACTICAL' AND horizon_sessions = 1""", [old])
+            changed.set()
+            assert commit.wait(10)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(reopen_outcome)
+        assert changed.wait(5)
+        archiver = executor.submit(TickerEvidenceArchive(storage).run, now=now, execute=True,
+                                   backup_token=_verified_backup(storage))
+        try:
+            assert archiver.result(timeout=5)["archived"] == 0
+        finally:
+            commit.set()
+        writer.result(timeout=5)
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.ticker_decision WHERE id = %s",
+                                  [old]).fetchone()["evidence_state"] == "local"
+
+
+def test_ticker_compact_history_and_current_decision_work_without_nas(storage, monkeypatch):
+    now = datetime.now(UTC) - timedelta(minutes=1)
+    old_at = now - timedelta(days=40)
+    with storage.runtime.transaction() as connection:
+        reconcile_instrument(connection, "TCOLD")
+    repository = TickerDecisionRepository(storage.runtime)
+    old = build_ticker_decision("TCOLD", {"quotes": [{
+        "symbol": "TCOLD", "price": 100, "observed_at": old_at - timedelta(minutes=1),
+        "available_at": old_at - timedelta(minutes=1), "confirmed": True,
+    }]}, as_of=old_at)
+    old_id = repository.publish(old)["ticker_decision_id"]
+    new = build_ticker_decision("TCOLD", {"quotes": [{
+        "symbol": "TCOLD", "price": 101, "observed_at": now - timedelta(minutes=1),
+        "available_at": now - timedelta(minutes=1), "confirmed": True,
+    }]}, as_of=now)
+    new_id = repository.publish(new)["ticker_decision_id"]
+    assert new_id != old_id
+    _complete_ticker(storage.runtime, old_id)
+    with storage.runtime.transaction() as connection:
+        connection.execute("""UPDATE analysis.ticker_data_request
+            SET status = 'complete', completed_at = %s
+            WHERE ticker_decision_id = %s AND status IN ('open', 'running')""", [now, old_id])
+    archive = TickerEvidenceArchive(storage)
+    result = archive.run(now=now, execute=True, backup_token=_verified_backup(storage))
+    with storage.runtime.read() as connection:
+        diagnostic = connection.execute("""SELECT status, as_of, evidence_state,
+            (SELECT count(*) FROM analysis.ticker_outcome WHERE ticker_decision_id = decision.id AND state = 'observing') AS pending,
+            (SELECT count(*) FROM analysis.ticker_data_request WHERE ticker_decision_id = decision.id AND status IN ('open', 'running')) AS requests
+            FROM analysis.ticker_decision decision WHERE id = %s""", [old_id]).fetchone()
+    assert result["archived"] == 1, diagnostic
+    offline = storage.archive_root.with_name(storage.archive_root.name + "-offline")
+    storage.archive_root.rename(offline)
+    try:
+        from fastapi.testclient import TestClient
+        from investment_panel.api import dependencies
+        from investment_panel.api.main import app
+
+        monkeypatch.setitem(app.dependency_overrides, dependencies.get_storage_archive_service,
+                            lambda: storage)
+        monkeypatch.setitem(app.dependency_overrides, dependencies.get_authorized_request,
+                            lambda: None)
+        assert repository.latest("TCOLD").decision_revision == new.decision_revision
+        with storage.runtime.read() as connection:
+            history = connection.execute("""SELECT decision_revision, resolution, input_manifest,
+                   evidence_state, evidence_archive_manifest_id
+                FROM analysis.ticker_decision_read WHERE id = %s""", [old_id]).fetchone()
+        assert history["decision_revision"] == old.decision_revision
+        assert history["evidence_state"] == "archived"
+        assert history["evidence_archive_manifest_id"] == result["manifest_id"]
+        assert history["resolution"]["action"] == old.resolution.action.value
+        assert history["input_manifest"]["trade_plan"] is None
+        assert archive.full_evidence(old_id) == {
+            "status": "archived", "archive_manifest_id": result["manifest_id"],
+        }
+        assert TestClient(app).get(f"/api/ticker-decisions/{old_id}/evidence").json() == {
+            "status": "archived", "archive_manifest_id": result["manifest_id"],
+        }
+    finally:
+        offline.rename(storage.archive_root)
 
 
 def test_completed_option_scan_archives_dependencies_and_restores_typed_rows(storage, migrated_postgres_dsn):

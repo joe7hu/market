@@ -15,7 +15,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.infrastructure.postgres import decision_storage
 from investment_panel.infrastructure.postgres.decision_storage import (
-    compact_context_batch, compact_decision_evidence_batch, context_digest,
+    backfill_ranking_publication_refs, compact_context_batch, compact_decision_evidence_batch, context_digest,
     require_maintenance_headroom, store_context,
 )
 from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
@@ -59,6 +59,50 @@ def _decision(runtime, *, revision="first", context=None, policy=None):
              Jsonb({"inputs": {"quote": [{"value": 10, "revision": None, "raw": "line\n中文"}]}}),
              Jsonb(context or {}), Jsonb(policy or {})],
         ).fetchone()["id"]
+
+
+@pytest.mark.parametrize("location", ["trade_plan", "opportunity_rank"])
+def test_ranking_publication_reference_backfill_preserves_exact_legacy_read(storage, location):
+    decision_id = _decision(storage.runtime)
+    with storage.runtime.transaction() as connection:
+        run_id = connection.execute("""INSERT INTO analysis.run
+            (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+            VALUES ('ranking-ref-test', now(), 'test', %s, now(), now(), 'succeeded') RETURNING id""",
+            ["f" * 64]).fetchone()["id"]
+        publication_id = connection.execute("""INSERT INTO app.publication
+            (scope, analysis_run_id, status) VALUES ('ticker-opportunity-ranking', %s, 'superseded')
+            RETURNING id""", [run_id]).fetchone()["id"]
+        payload = ({"publication_id": str(publication_id), "action": "HOLD"}
+                   if location == "trade_plan" else {"ranking_publication_id": str(publication_id)})
+        connection.execute("""UPDATE analysis.ticker_decision SET
+            input_manifest = jsonb_set(input_manifest, %s::text[], %s::jsonb)
+            WHERE id = %s""", [[location], Jsonb(payload), decision_id])
+    with storage.runtime.read() as connection:
+        before = connection.execute("SELECT input_manifest::text FROM analysis.ticker_decision_read WHERE id = %s",
+                                    [decision_id]).fetchone()
+    assert backfill_ranking_publication_refs(storage.runtime, batch_size=1, execute=True)["checked"] == 1
+    with storage.runtime.read() as connection:
+        after = connection.execute("SELECT input_manifest::text FROM analysis.ticker_decision_read WHERE id = %s",
+                                   [decision_id]).fetchone()
+        ref = connection.execute("SELECT ranking_publication_id, ranking_ref_checked FROM analysis.ticker_decision WHERE id = %s",
+                                 [decision_id]).fetchone()
+    assert after == before
+    assert ref == {"ranking_publication_id": publication_id, "ranking_ref_checked": True}
+    assert backfill_ranking_publication_refs(storage.runtime, batch_size=1, execute=True)["checked"] == 0
+
+
+def test_ranking_backfill_rejects_conflicting_plan_and_rank_refs(storage):
+    decision_id = _decision(storage.runtime)
+    with storage.runtime.transaction() as connection:
+        connection.execute("""UPDATE analysis.ticker_decision SET input_manifest = input_manifest || %s::jsonb
+            WHERE id = %s""", [Jsonb({"trade_plan": {"publication_id": "00000000-0000-4000-8000-000000000001"},
+                                     "opportunity_rank": {"ranking_publication_id": "00000000-0000-4000-8000-000000000002"}}),
+                              decision_id])
+    with pytest.raises(ValueError, match="conflict"):
+        backfill_ranking_publication_refs(storage.runtime, execute=True)
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT ranking_ref_checked FROM analysis.ticker_decision WHERE id = %s",
+                                  [decision_id]).fetchone()["ranking_ref_checked"] is False
 
 
 def test_decision_evidence_normalization_keeps_exact_reads_and_one_owner(storage):
