@@ -6,7 +6,7 @@ Status: **in progress; production cutover and compaction have not run**.
 
 - Candidate branch: `codex/market-evidence-lifecycle-20260926`, based on `1ebefecbe9de8cec2a5dbb915f822a0f6149eca7`.
 - Additive schema: Alembic `20260926_0040`, from `20260924_0039`.
-- Candidate code identity: `git rev-parse HEAD` after the branch commit; the test logs below were produced from the same uncommitted tree immediately before that commit.
+- Tested code identity: `69bb937acf739af64b83e3c29d420cc22555b40d`. The checks below ran on this frozen code and schema revision.
 - Baseline capture: `/tmp/market-storage-baseline-20260926.json` (read only). PostgreSQL: 57,782,732,479 bytes; PostgreSQL filesystem free: 36,693,741,568 bytes. `app.publication_payload`: 12,869,959,680 bytes; `analysis.ticker_decision`: 10,839,572,480 bytes; `raw.option_quote`: about 9.93 GiB.
 - The 100-decision sample showed duplicate resolution/plan impact, decision/episode expressions, and selected expression in nearly every applicable row. The resolution impact alone added 17,433,334 JSON bytes in the sample.
 - No production schema migration, backfill, archive, or physical rewrite has run. Production after-size, observed reclamation, and production archive and restore receipts are **unmeasured**. The disposable restore test generates a manifest ID, deletes source scan evidence, restores typed rows in staging, and compares the exact JSON representation before and after.
@@ -40,7 +40,7 @@ The restore destination must be a migrated staging PostgreSQL database set throu
 - `uv run pytest -q` on the seven files above: **145 passed, one dependency deprecation warning**, `/tmp/market-evidence-e2e-22.log`.
 - `make guards`: **31 passed**, `/tmp/market-evidence-guards-22.log`.
 - `make check`: **passed**, including 53 frontend test files / 235 tests and typecheck, `/tmp/market-evidence-check-23.log`.
-- `make release-gate`: an earlier candidate passed 2,460 tests. The frozen candidate run is in `/tmp/market-evidence-release-gate-19.log`; record its result before merge.
+- `make release-gate`: **passed**, 2,487 tests, 84.30% coverage, `/tmp/market-evidence-release-gate-19.log`.
 - Independent branch review completed with no accepted finding in `/tmp/market-evidence-autoreview-21.log`. Its excluded-scope starvation concern was checked against `_publication_candidates`: the SQL excludes those scopes before `LIMIT`. Earlier reviews found and repaired archive, replay, legacy paper lookup, action fingerprint, and optional-history status defects.
 
 ## Open acceptance gates
