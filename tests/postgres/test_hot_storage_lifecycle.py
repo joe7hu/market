@@ -557,8 +557,8 @@ def test_ticker_compact_history_and_current_decision_work_without_nas(storage, m
         from investment_panel.api import dependencies
         from investment_panel.api.main import app
 
-        monkeypatch.setitem(app.dependency_overrides, dependencies.get_storage_archive_service,
-                            lambda: storage)
+        monkeypatch.setitem(app.dependency_overrides, dependencies.get_ticker_decision_evidence,
+                            lambda: TickerEvidenceArchive(storage).full_evidence)
         monkeypatch.setitem(app.dependency_overrides, dependencies.get_authorized_request,
                             lambda: None)
         assert repository.latest("TCOLD").decision_revision == new.decision_revision

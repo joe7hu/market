@@ -17745,6 +17745,22 @@
             "title": "Decision Revision",
             "type": "string"
           },
+          "evidence_archive_manifest_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Archive Manifest Id"
+          },
+          "evidence_state": {
+            "default": "local",
+            "title": "Evidence State",
+            "type": "string"
+          },
           "expressions": {
             "additionalProperties": {
               "$ref": "#/components/schemas/ExpressionDecision"
@@ -17872,6 +17888,27 @@
           },
           "decision_revision": {
             "title": "Decision Revision",
+            "type": "string"
+          },
+          "evidence_archive_manifest_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Archive Manifest Id"
+          },
+          "evidence_state": {
+            "default": "local",
+            "enum": [
+              "local",
+              "archived",
+              "unavailable"
+            ],
+            "title": "Evidence State",
             "type": "string"
           },
           "expressions": {
@@ -25501,6 +25538,48 @@
           }
         },
         "summary": "Run Thesis Automation Endpoint"
+      }
+    },
+    "/api/ticker-decisions/{decision_id}/evidence": {
+      "get": {
+        "operationId": "ticker_decision_evidence_api_ticker_decisions__decision_id__evidence_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "decision_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Decision Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ticker Decision Evidence Api Ticker Decisions  Decision Id  Evidence Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ticker Decision Evidence"
       }
     },
     "/api/tickers/{ticker}": {

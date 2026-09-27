@@ -1673,6 +1673,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ticker-decisions/{decision_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ticker Decision Evidence */
+        get: operations["ticker_decision_evidence_api_ticker_decisions__decision_id__evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tickers/{ticker}": {
         parameters: {
             query?: never;
@@ -8103,6 +8120,13 @@ export interface components {
             decision_contract_version: string;
             /** Decision Revision */
             decision_revision: string;
+            /** Evidence Archive Manifest Id */
+            evidence_archive_manifest_id?: number | null;
+            /**
+             * Evidence State
+             * @default local
+             */
+            evidence_state: string;
             /** Expressions */
             expressions?: {
                 [key: string]: components["schemas"]["ExpressionDecision"];
@@ -8147,6 +8171,14 @@ export interface components {
             decision_contract_version: string;
             /** Decision Revision */
             decision_revision: string;
+            /** Evidence Archive Manifest Id */
+            evidence_archive_manifest_id?: number | null;
+            /**
+             * Evidence State
+             * @default local
+             * @enum {string}
+             */
+            evidence_state: "local" | "archived" | "unavailable";
             /** Expressions */
             expressions: {
                 [key: string]: components["schemas"]["ExpressionDecision"];
@@ -11918,6 +11950,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ThesisAutomationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ticker_decision_evidence_api_ticker_decisions__decision_id__evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                decision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

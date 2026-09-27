@@ -96,6 +96,7 @@
   "/api/theses/{symbol}/history": ["GET"],
   "/api/theses/{symbol}/review": ["POST"],
   "/api/thesis-monitor/automation": ["POST"],
+  "/api/ticker-decisions/{decision_id}/evidence": ["GET"],
   "/api/tickers/{ticker}": ["GET"],
   "/api/tickers/{ticker}/assistant-packet": ["GET"],
   "/api/tickers/{ticker}/assistant-response": ["POST"],

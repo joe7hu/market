@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,8 +16,6 @@ from investment_panel.api.response_contracts import ContextualAssistantPacketRes
 from investment_panel.core.contextual_assistant import build_contextual_packet, validate_contextual_response
 from investment_panel.settings import AppConfig
 from investment_panel.domain.decision import TickerDecision
-from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
-from investment_panel.infrastructure.postgres.ticker_evidence_archive import TickerEvidenceArchive
 
 router = APIRouter()
 
@@ -25,10 +23,10 @@ router = APIRouter()
 @router.get("/api/ticker-decisions/{decision_id}/evidence")
 def ticker_decision_evidence(
     decision_id: UUID,
-    service: StorageArchiveService = Depends(dependencies.get_storage_archive_service),
+    evidence_reader: Callable[[UUID], dict[str, Any]] = Depends(dependencies.get_ticker_decision_evidence),
     _request=Depends(dependencies.get_authorized_request),
 ) -> dict[str, Any]:
-    return TickerEvidenceArchive(service).full_evidence(decision_id)
+    return evidence_reader(decision_id)
 
 
 # The ticker page needs decision conclusions and compact authority identifiers,

@@ -28,6 +28,7 @@ from investment_panel.settings import AppConfig, load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.sources import SourceRepository
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
+from investment_panel.infrastructure.postgres.ticker_evidence_archive import TickerEvidenceArchive
 from investment_panel.infrastructure.postgres.superinvestor_portfolios import superinvestor_portfolios
 
 
@@ -72,6 +73,10 @@ def get_source_repository(config: AppConfig = Depends(get_config)) -> SourceRepo
 
 def get_storage_archive_service(config: AppConfig = Depends(get_config)) -> StorageArchiveService:
     return StorageArchiveService(runtime_for_config(config), Path(config.nas.storage_archive_dir))
+
+
+def get_ticker_decision_evidence(service: StorageArchiveService = Depends(get_storage_archive_service)):
+    return TickerEvidenceArchive(service).full_evidence
 
 
 def get_superinvestor_query(
@@ -125,6 +130,7 @@ __all__ = [
     "get_portfolio_actions",
     "get_source_repository",
     "get_storage_archive_service",
+    "get_ticker_decision_evidence",
     "get_superinvestor_query",
     "get_thesis_actions",
     "get_paper_workbench",
