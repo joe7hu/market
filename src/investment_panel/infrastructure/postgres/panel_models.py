@@ -532,7 +532,7 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY decision.as_of DESC, decision.rank
     """,
     "ticker_decisions": """
-        WITH current_candidates AS (
+        WITH current_candidates AS MATERIALIZED (
             SELECT decision.id,
                    count(*) OVER (
                        PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
@@ -545,7 +545,7 @@ DIRECT_QUERIES: dict[str, str] = {
                        ORDER BY decision.as_of DESC, decision.published_at DESC,
                                 decision.created_at DESC, decision.id DESC
                    ) AS current_row
-            FROM analysis.ticker_decision_read decision
+            FROM analysis.ticker_decision decision
             JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
             WHERE decision.status = 'published'
               AND decision.contract_version = 'ticker-decision.v1'
