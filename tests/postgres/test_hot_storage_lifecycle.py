@@ -1186,7 +1186,7 @@ def test_option_scan_referenced_by_newer_local_scan_stays_local(storage):
         """, [decision_id]).fetchone()["id"]
         connection.execute("UPDATE analysis.option_decision SET primary_decision_id = %s WHERE decision_id = %s",
                            [decision_id, successor])
-    assert OptionEvidenceArchive(storage).run(now=now)["status"] == "pass_complete"
+    assert OptionEvidenceArchive(storage).run(now=now)["status"] == "blocked_remaining_evidence"
     with storage.runtime.read() as connection:
         assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s",
                                   [decision_id]).fetchone()["evidence_state"] == "local"
@@ -1383,7 +1383,7 @@ def test_incomplete_option_scan_does_not_block_later_completed_scan(storage):
     result = OptionEvidenceArchive(storage).run(
         now=now, batch_size=3, execute=True, backup_token=_verified_backup(storage))
     assert result["archived"] == 2
-    assert result["skipped"] == [str(broken_id)]
+    assert result["skipped"] == []
     with storage.runtime.read() as connection:
         states = {str(row["decision_id"]): row["evidence_state"] for row in connection.execute(
             "SELECT decision_id, evidence_state FROM analysis.option_decision WHERE decision_id = ANY(%s)",
@@ -1433,7 +1433,9 @@ def test_option_scan_missing_quote_prevents_compaction(storage):
         connection.execute("DELETE FROM raw.option_quote WHERE observed_at < %s", [now - timedelta(days=30)])
     skipped = OptionEvidenceArchive(storage).run(now=now, execute=True,
                                                   backup_token=_verified_backup(storage))
-    assert skipped["archived"] == 0 and skipped["skipped"] == [str(decision_id)]
+    assert skipped["archived"] == 0
+    assert skipped["status"] == "blocked_missing_source_quote"
+    assert skipped["skipped"] == [str(decision_id)]
     with storage.runtime.read() as connection:
         assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()["evidence_state"] == "local"
 

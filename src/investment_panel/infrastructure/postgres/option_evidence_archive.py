@@ -78,7 +78,14 @@ class OptionEvidenceArchive:
                     JOIN analysis.option_decision scan ON scan.decision_id = decision.id
                     JOIN analysis.run run ON run.id = decision.run_id
                     WHERE decision.kind = 'option' AND decision.as_of < %s
+                      -- ponytail: This quote floor scans partitions; index observed_at if it reaches the 30s maintenance limit.
+                      AND decision.as_of >= (SELECT min(observed_at) FROM raw.option_quote)
+                      AND decision.as_of >= scan.quote_observed_at
                       AND scan.evidence_state = 'local' AND run.status = 'succeeded'
+                      AND EXISTS (SELECT 1 FROM raw.option_quote quote
+                                  WHERE quote.snapshot_id = scan.snapshot_id
+                                    AND quote.contract_id = scan.contract_id
+                                    AND quote.observed_at = scan.quote_observed_at)
                       AND NOT EXISTS (SELECT 1 FROM analysis.option_decision dependent
                                       WHERE dependent.primary_decision_id = decision.id
                                         AND dependent.evidence_state = 'local')
@@ -113,6 +120,25 @@ class OptionEvidenceArchive:
                       cursor.get("decision_id") or "00000000-0000-0000-0000-000000000000",
                       batch_size]).fetchall()
                 if not rows:
+                    remaining = connection.execute("""
+                        SELECT scan.decision_id,
+                               EXISTS (SELECT 1 FROM raw.option_quote quote
+                                       WHERE quote.snapshot_id = scan.snapshot_id
+                                         AND quote.contract_id = scan.contract_id
+                                         AND quote.observed_at = scan.quote_observed_at) AS has_quote
+                        FROM analysis.decision decision
+                        JOIN analysis.option_decision scan ON scan.decision_id = decision.id
+                        WHERE decision.kind = 'option' AND decision.as_of < %s
+                          AND scan.evidence_state = 'local'
+                        ORDER BY decision.as_of, decision.id LIMIT 1
+                    """, [reference - timedelta(days=30)]).fetchone()
+                    if remaining:
+                        skipped = [str(remaining["decision_id"])]
+                        if execute:
+                            self._checkpoint(connection, {}, 0, "paused", skipped=skipped)
+                        status = "blocked_remaining_evidence" if remaining["has_quote"] else "blocked_missing_source_quote"
+                        return {"phase": CHECKPOINT, "status": status,
+                                "archived": 0, "skipped": skipped, "dry_run": not execute}
                     if execute:
                         self._checkpoint(connection, {}, 0, "succeeded")
                     return {"phase": CHECKPOINT, "status": "pass_complete",
