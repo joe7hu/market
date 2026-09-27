@@ -529,7 +529,7 @@ def test_completed_ticker_evidence_archives_exact_inputs_and_restores_typed_rows
     assert restored == original
 
 
-def test_archived_legacy_ticker_keeps_fingerprint_for_exact_retry(storage, migrated_postgres_dsn):
+def test_archived_legacy_ticker_keeps_fingerprint_for_exact_retry(storage, migrated_postgres_dsn, tmp_path):
     now = datetime.now(UTC)
     old_time = now - timedelta(days=40)
     with storage.runtime.transaction() as connection:
@@ -551,9 +551,10 @@ def test_archived_legacy_ticker_keeps_fingerprint_for_exact_retry(storage, migra
     assert TickerEvidenceArchive(storage).run(now=now, execute=True,
                                               backup_token=_verified_backup(storage))["archived"] == 1
     with storage.runtime.read() as connection:
-        row = connection.execute("SELECT evidence_state, semantic_fingerprint FROM analysis.ticker_decision WHERE id = %s",
+        row = connection.execute("SELECT evidence_state, semantic_fingerprint, evidence_archive_manifest_id FROM analysis.ticker_decision WHERE id = %s",
                                  [old_id]).fetchone()
     assert row["evidence_state"] == "archived" and row["semantic_fingerprint"] is not None
+    storage.restore_to_file(row["evidence_archive_manifest_id"], tmp_path / "archived-ticker.json")
     assert repository.publish(old)["ticker_decision_id"] == old_id
     with storage.runtime.read() as connection:
         assert connection.execute("SELECT count(*) FROM analysis.ticker_decision").fetchone()["count"] == 2

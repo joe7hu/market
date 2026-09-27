@@ -23,7 +23,7 @@ from investment_panel.infrastructure.postgres.decision_storage import require_ma
 from investment_panel.infrastructure.postgres.hot_retention import MAINTENANCE_PROFILE
 from investment_panel.infrastructure.postgres.row_archive import RowArchive
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
-from investment_panel.infrastructure.postgres.ticker_decisions import _decision_from_row, semantic_decision_fingerprint
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository, semantic_decision_fingerprint
 
 
 CHECKPOINT = "ticker-evidence-v1"
@@ -126,17 +126,14 @@ class TickerEvidenceArchive:
                       WHERE ticker_decision_id = ANY(%s) AND status IN ('open', 'running')
                 ) AS active""", [selected, selected, selected]).fetchone()["active"]:
                     raise ValueError("ticker evidence gained unfinished work; source retained")
+                decision_reader = TickerDecisionRepository(self.service.runtime)
                 for decision_id in selected:
-                    row = connection.execute("""
-                        SELECT instrument.symbol AS ticker, decision.*
-                        FROM analysis.ticker_decision_read decision
-                        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                        WHERE decision.id = %s AND decision.semantic_fingerprint IS NULL
-                    """, [decision_id]).fetchone()
-                    if row is None:
+                    if connection.execute("""SELECT semantic_fingerprint FROM analysis.ticker_decision
+                        WHERE id = %s""", [decision_id]).fetchone()["semantic_fingerprint"] is not None:
                         continue
                     try:
-                        fingerprint = semantic_decision_fingerprint(_decision_from_row(row))
+                        fingerprint = semantic_decision_fingerprint(
+                            decision_reader.historical_by_id(str(decision_id)))
                     except (TypeError, ValueError, KeyError):
                         continue
                     connection.execute("""

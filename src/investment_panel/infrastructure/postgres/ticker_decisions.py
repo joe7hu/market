@@ -500,11 +500,17 @@ class TickerDecisionRepository:
                                 WHERE stored.id = %s
                             """, [historical["id"]]).fetchone()
                             stored = _decision_from_row(historical_row)
-                    except (psycopg.Error, TypeError, ValueError, KeyError):
+                    except psycopg.errors.RaiseException as exc:
+                        message = exc.diag.message_primary or ""
+                        if (message != "missing immutable decision input payload"
+                            and not message.startswith("missing immutable decision payload ")):
+                            raise
+                        continue
+                    except (TypeError, ValueError, KeyError):
                         continue
                     if historical["evidence_state"] == "archived":
                         matches = (historical["semantic_fingerprint"] == fingerprint
-                                   and historical["verification_status"] == "verified")
+                                   and historical["verification_status"] in ("verified", "restored"))
                     else:
                         matches = semantic_decision_fingerprint(stored) == fingerprint
                     if not matches:
