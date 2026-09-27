@@ -131,8 +131,9 @@ class IngestionRepository:
                 # not lifecycle authority. Identity and lifecycle rows are
                 # changed only by the explicit source lifecycle APIs.
                 connection.execute(
-                    "UPDATE ingest.source SET name = %s, capabilities = %s, updated_at = now() WHERE id = %s",
-                    [name, Jsonb(capabilities or {}), source_id],
+                    """UPDATE ingest.source SET name = %s, capabilities = %s, updated_at = now()
+                       WHERE id = %s AND (name, capabilities) IS DISTINCT FROM (%s, %s::jsonb)""",
+                    [name, Jsonb(capabilities or {}), source_id, name, Jsonb(capabilities or {})],
                 )
                 return
             connection.execute(
@@ -569,6 +570,20 @@ class IngestionRepository:
                     expected_contract_count = EXCLUDED.expected_contract_count,
                     received_contract_count = EXCLUDED.received_contract_count,
                     capture_state = EXCLUDED.capture_state
+                WHERE ROW(
+                    raw.option_snapshot.ingest_run_id, raw.option_snapshot.payload_id,
+                    raw.option_snapshot.market_session, raw.option_snapshot.completeness,
+                    raw.option_snapshot.contract_count, raw.option_snapshot.collection_profile,
+                    raw.option_snapshot.history_symbol, raw.option_snapshot.slot_at,
+                    raw.option_snapshot.capture_started_at, raw.option_snapshot.capture_finished_at,
+                    raw.option_snapshot.expected_contract_count,
+                    raw.option_snapshot.received_contract_count, raw.option_snapshot.capture_state) IS DISTINCT FROM ROW(
+                    EXCLUDED.ingest_run_id, COALESCE(EXCLUDED.payload_id,
+                    raw.option_snapshot.payload_id), EXCLUDED.market_session, EXCLUDED.completeness,
+                    EXCLUDED.contract_count, EXCLUDED.collection_profile, EXCLUDED.history_symbol,
+                    EXCLUDED.slot_at, EXCLUDED.capture_started_at, EXCLUDED.capture_finished_at,
+                    EXCLUDED.expected_contract_count, EXCLUDED.received_contract_count,
+                    EXCLUDED.capture_state)
                 RETURNING id
                 """,
                 [
@@ -578,6 +593,17 @@ class IngestionRepository:
                     received_contract_count, capture_state,
                 ],
             ).fetchone()
+            # An unchanged ON CONFLICT row is locked but not RETURNING-ed.
+            # Use a new READ COMMITTED statement so concurrent first inserts
+            # are visible without generating a needless tuple version.
+            if snapshot is None:
+                snapshot = connection.execute(
+                    """SELECT id FROM raw.option_snapshot
+                       WHERE source_id = %s AND observed_at = %s AND universe = %s""",
+                    [source_id, observed_at, universe],
+                ).fetchone()
+            if snapshot is None:
+                raise RuntimeError("option snapshot identity disappeared during ingestion")
             snapshot_id = int(snapshot["id"])
             if normalized:
                 _stage_option_rows(connection, normalized)
@@ -740,6 +766,28 @@ class IngestionRepository:
                         )
                       ),
                       deliverable_key = catalog.option_contract.deliverable_key
+                    WHERE catalog.option_contract.provider_symbols IS DISTINCT FROM
+                          (catalog.option_contract.provider_symbols || EXCLUDED.provider_symbols)
+                       OR (EXCLUDED.style IS NOT NULL AND
+                           catalog.option_contract.style IS DISTINCT FROM EXCLUDED.style)
+                       OR (EXCLUDED.settlement IS NOT NULL AND
+                           catalog.option_contract.settlement IS DISTINCT FROM EXCLUDED.settlement)
+                       OR catalog.option_contract.standard_contract_verified IS DISTINCT FROM (
+                        (
+                          catalog.option_contract.standard_contract_verified
+                          OR EXCLUDED.standard_contract_verified
+                        )
+                        AND coalesce(catalog.option_contract.style, EXCLUDED.style) = 'american'
+                        AND coalesce(catalog.option_contract.settlement, EXCLUDED.settlement) = 'physical'
+                        AND (
+                          catalog.option_contract.style IS NULL OR EXCLUDED.style IS NULL
+                          OR catalog.option_contract.style = EXCLUDED.style
+                        )
+                        AND (
+                          catalog.option_contract.settlement IS NULL OR EXCLUDED.settlement IS NULL
+                          OR catalog.option_contract.settlement = EXCLUDED.settlement
+                        )
+                      )
                     """,
                     [source_id],
                 )
@@ -806,13 +854,45 @@ class IngestionRepository:
                         available_at = EXCLUDED.available_at,
                         underlying_observed_at = EXCLUDED.underlying_observed_at,
                         underlying_available_at = EXCLUDED.underlying_available_at
+                    WHERE ROW(
+                        raw.option_quote.contract_style, raw.option_quote.contract_settlement,
+                        raw.option_quote.contract_deliverable_key,
+                        raw.option_quote.standard_contract_verified, raw.option_quote.underlying_price,
+                        raw.option_quote.bid, raw.option_quote.ask, raw.option_quote.mid,
+                        raw.option_quote.last, raw.option_quote.volume, raw.option_quote.bid_size,
+                        raw.option_quote.ask_size, raw.option_quote.last_trade_at,
+                        raw.option_quote.captured_at, raw.option_quote.market_data_status,
+                        raw.option_quote.open_interest, raw.option_quote.provider_iv,
+                        raw.option_quote.provider_delta, raw.option_quote.provider_gamma,
+                        raw.option_quote.provider_theta, raw.option_quote.provider_vega,
+                        raw.option_quote.previous_close, raw.option_quote.provider_rho,
+                        raw.option_quote.chance_of_profit_long, raw.option_quote.chance_of_profit_short,
+                        raw.option_quote.provider_updated_at, raw.option_quote.provider_payload,
+                        raw.option_quote.capture_group_key, raw.option_quote.group_started_at,
+                        raw.option_quote.group_finished_at, raw.option_quote.provider_observed_at,
+                        raw.option_quote.available_at, raw.option_quote.underlying_observed_at,
+                        raw.option_quote.underlying_available_at) IS DISTINCT FROM ROW(
+                        EXCLUDED.contract_style, EXCLUDED.contract_settlement,
+                        EXCLUDED.contract_deliverable_key, EXCLUDED.standard_contract_verified,
+                        EXCLUDED.underlying_price, EXCLUDED.bid, EXCLUDED.ask, EXCLUDED.mid, EXCLUDED.last,
+                        EXCLUDED.volume, EXCLUDED.bid_size, EXCLUDED.ask_size, EXCLUDED.last_trade_at,
+                        EXCLUDED.captured_at, EXCLUDED.market_data_status, EXCLUDED.open_interest,
+                        EXCLUDED.provider_iv, EXCLUDED.provider_delta, EXCLUDED.provider_gamma,
+                        EXCLUDED.provider_theta, EXCLUDED.provider_vega, EXCLUDED.previous_close,
+                        EXCLUDED.provider_rho, EXCLUDED.chance_of_profit_long,
+                        EXCLUDED.chance_of_profit_short, EXCLUDED.provider_updated_at,
+                        EXCLUDED.provider_payload, EXCLUDED.capture_group_key, EXCLUDED.group_started_at,
+                        EXCLUDED.group_finished_at, EXCLUDED.provider_observed_at, EXCLUDED.available_at,
+                        EXCLUDED.underlying_observed_at, EXCLUDED.underlying_available_at)
                     """,
                     [quote_observed_at, observed_at, quote_observed_at, quote_observed_at,
                      snapshot_id, capture_generation_id, observed_at, observed_at],
                 )
             connection.execute(
-                "UPDATE ingest.run SET item_count = %s, instrument_count = %s WHERE id = %s",
-                [len(normalized), len({row["underlying_symbol"] for row in normalized}), run_id],
+                """UPDATE ingest.run SET item_count = %s, instrument_count = %s WHERE id = %s
+                   AND (item_count, instrument_count) IS DISTINCT FROM (%s, %s)""",
+                [len(normalized), len({row["underlying_symbol"] for row in normalized}), run_id,
+                 len(normalized), len({row["underlying_symbol"] for row in normalized})],
             )
         return {"snapshot_id": snapshot_id, "contract_count": len(normalized)}
 
