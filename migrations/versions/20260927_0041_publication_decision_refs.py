@@ -163,8 +163,10 @@ def upgrade() -> None:
           THEN RETURN NEW; END IF;
           publication_ref := NEW.metrics->>'publication_id';
           IF publication_ref IS NULL THEN RETURN NEW; END IF;
-          IF TG_OP = 'UPDATE' AND publication_ref IS NOT DISTINCT FROM
-             OLD.metrics->>'publication_id' THEN RETURN NEW; END IF;
+          IF TG_OP = 'UPDATE' AND OLD.source_kind = 'options_paper_experiment'
+             AND OLD.status NOT IN ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired')
+             AND publication_ref IS NOT DISTINCT FROM
+               OLD.metrics->>'publication_id' THEN RETURN NEW; END IF;
           IF publication_ref !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
           THEN RAISE EXCEPTION 'active shadow publication is unavailable'; END IF;
           PERFORM 1 FROM app.publication publication
@@ -173,7 +175,7 @@ def upgrade() -> None:
           RETURN NEW;
         END $$;
         CREATE TRIGGER require_active_shadow_publication
-          BEFORE INSERT OR UPDATE OF metrics ON analysis.shadow_trade
+          BEFORE INSERT OR UPDATE OF metrics, status, source_kind ON analysis.shadow_trade
           FOR EACH ROW EXECUTE FUNCTION analysis.require_active_shadow_publication();
     """)
     op.execute("""
@@ -191,7 +193,9 @@ def upgrade() -> None:
             THEN RETURN NEW; END IF;
             -- An existing shadow retains its typed plan and quote after the
             -- bulky scan detail is archived. New shadows still require local evidence.
-            IF TG_OP = 'UPDATE' AND NEW.decision_id = OLD.decision_id THEN RETURN NEW; END IF;
+            IF TG_OP = 'UPDATE' AND NEW.decision_id = OLD.decision_id
+               AND OLD.status NOT IN ('closed', 'unfilled', 'unmeasurable', 'rejected', 'expired')
+            THEN RETURN NEW; END IF;
           END IF;
           SELECT evidence_state INTO state FROM analysis.option_decision
             WHERE decision_id = NEW.decision_id FOR KEY SHARE;

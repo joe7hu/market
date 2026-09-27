@@ -288,6 +288,10 @@ def test_old_option_publication_stays_local_while_shadow_outcome_is_open(postgre
         assert retention.prune_publications(now=reference, candidate_ids=[publication["id"]])["publications"] == 1
         with pytest.raises(psycopg.Error, match="active shadow publication is unavailable"):
             with runtime.transaction() as connection:
+                connection.execute("UPDATE analysis.shadow_trade SET status = 'pending' WHERE id = %s",
+                                   [shadow_id])
+        with pytest.raises(psycopg.Error, match="active shadow publication is unavailable"):
+            with runtime.transaction() as connection:
                 late = connection.execute("""INSERT INTO analysis.decision
                     (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
                     VALUES (%s, 'late', 'option', %s, %s, 'WATCH', %s) RETURNING id""",

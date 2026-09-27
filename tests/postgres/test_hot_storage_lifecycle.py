@@ -1420,6 +1420,10 @@ def test_pending_shadow_keeps_compact_plan_and_quote_while_scan_archives(storage
         assert quote == {"provider_payload": {}, "mid": 5.0}
     with storage.runtime.transaction() as connection:
         connection.execute("UPDATE analysis.shadow_trade SET status = 'closed' WHERE id = %s", [shadow_id])
+    with pytest.raises(psycopg.Error, match="active option consumer requires local evidence"):
+        with storage.runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.shadow_trade SET status = 'pending' WHERE id = %s",
+                               [shadow_id])
 
 
 def test_active_paper_reference_keeps_old_option_scan_local(storage):
