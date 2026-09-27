@@ -293,6 +293,31 @@ def test_backdated_retry_does_not_reuse_malformed_or_quarantined_history(storage
     assert repository.publish(old)["ticker_decision_id"] not in {old_id, replacement_id}
 
 
+def test_backdated_retry_isolates_corrupt_historical_input_reference(storage, migrated_postgres_dsn):
+    with storage.runtime.transaction() as connection:
+        reconcile_instrument(connection, "BADREFLATE")
+    repository = TickerDecisionRepository(storage.runtime)
+    cutoff = datetime(2026, 9, 25, 14, tzinfo=UTC)
+    old = build_ticker_decision("BADREFLATE", {"quotes": [{
+        "symbol": "BADREFLATE", "price": 100, "observed_at": cutoff - timedelta(minutes=1),
+        "available_at": cutoff - timedelta(minutes=1), "confirmed": True,
+    }]}, as_of=cutoff)
+    old_id = repository.publish(old)["ticker_decision_id"]
+    repository.publish(build_ticker_decision("BADREFLATE", {"quotes": [{
+        "symbol": "BADREFLATE", "price": 101, "observed_at": cutoff + timedelta(minutes=1),
+        "available_at": cutoff + timedelta(minutes=1), "confirmed": True,
+    }]}, as_of=cutoff + timedelta(minutes=1)))
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("ALTER TABLE analysis.ticker_decision DISABLE TRIGGER ticker_decision_input_refs_valid")
+        connection.execute("UPDATE analysis.ticker_decision SET input_payload_refs = %s WHERE id = %s",
+                           [Jsonb({"quotes": "0" * 64}), old_id])
+        connection.execute("ALTER TABLE analysis.ticker_decision ENABLE TRIGGER ticker_decision_input_refs_valid")
+    replacement_id = repository.publish(old)["ticker_decision_id"]
+    assert replacement_id != old_id
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT count(*) FROM analysis.ticker_decision").fetchone()["count"] == 3
+
+
 def test_evidence_batch_budget_includes_expression_bytes(storage, monkeypatch):
     decision_id = _decision(storage.runtime)
     with storage.runtime.transaction() as connection:

@@ -23,6 +23,7 @@ from investment_panel.infrastructure.postgres.decision_storage import require_ma
 from investment_panel.infrastructure.postgres.hot_retention import MAINTENANCE_PROFILE
 from investment_panel.infrastructure.postgres.row_archive import RowArchive
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
+from investment_panel.infrastructure.postgres.ticker_decisions import _decision_from_row, semantic_decision_fingerprint
 
 
 CHECKPOINT = "ticker-evidence-v1"
@@ -125,6 +126,23 @@ class TickerEvidenceArchive:
                       WHERE ticker_decision_id = ANY(%s) AND status IN ('open', 'running')
                 ) AS active""", [selected, selected, selected]).fetchone()["active"]:
                     raise ValueError("ticker evidence gained unfinished work; source retained")
+                for decision_id in selected:
+                    row = connection.execute("""
+                        SELECT instrument.symbol AS ticker, decision.*
+                        FROM analysis.ticker_decision_read decision
+                        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                        WHERE decision.id = %s AND decision.semantic_fingerprint IS NULL
+                    """, [decision_id]).fetchone()
+                    if row is None:
+                        continue
+                    try:
+                        fingerprint = semantic_decision_fingerprint(_decision_from_row(row))
+                    except (TypeError, ValueError, KeyError):
+                        continue
+                    connection.execute("""
+                        UPDATE analysis.ticker_decision SET semantic_fingerprint = %s
+                        WHERE id = %s AND semantic_fingerprint IS NULL
+                    """, [fingerprint, decision_id])
                 packs, hashes, contexts = self._dependencies(connection, rows)
                 receipt = {"contract": "ticker-evidence.v1",
                            "decision_ids": [str(value) for value in selected],

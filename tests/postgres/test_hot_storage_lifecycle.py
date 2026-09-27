@@ -529,6 +529,36 @@ def test_completed_ticker_evidence_archives_exact_inputs_and_restores_typed_rows
     assert restored == original
 
 
+def test_archived_legacy_ticker_keeps_fingerprint_for_exact_retry(storage, migrated_postgres_dsn):
+    now = datetime.now(UTC)
+    old_time = now - timedelta(days=40)
+    with storage.runtime.transaction() as connection:
+        reconcile_instrument(connection, "ARCHRETRY")
+    repository = TickerDecisionRepository(storage.runtime)
+    old = build_ticker_decision("ARCHRETRY", {"quotes": [{
+        "symbol": "ARCHRETRY", "price": 100, "observed_at": old_time - timedelta(minutes=1),
+        "available_at": old_time - timedelta(minutes=1), "confirmed": True,
+    }]}, as_of=old_time)
+    old_id = repository.publish(old)["ticker_decision_id"]
+    repository.publish(build_ticker_decision("ARCHRETRY", {"quotes": [{
+        "symbol": "ARCHRETRY", "price": 101, "observed_at": now - timedelta(days=1),
+        "available_at": now - timedelta(days=1), "confirmed": True,
+    }]}, as_of=now - timedelta(days=1)))
+    _complete_ticker(storage.runtime, old_id)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("DELETE FROM analysis.ticker_data_request WHERE ticker_decision_id = %s", [old_id])
+        connection.execute("UPDATE analysis.ticker_decision SET semantic_fingerprint = NULL WHERE id = %s", [old_id])
+    assert TickerEvidenceArchive(storage).run(now=now, execute=True,
+                                              backup_token=_verified_backup(storage))["archived"] == 1
+    with storage.runtime.read() as connection:
+        row = connection.execute("SELECT evidence_state, semantic_fingerprint FROM analysis.ticker_decision WHERE id = %s",
+                                 [old_id]).fetchone()
+    assert row["evidence_state"] == "archived" and row["semantic_fingerprint"] is not None
+    assert repository.publish(old)["ticker_decision_id"] == old_id
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT count(*) FROM analysis.ticker_decision").fetchone()["count"] == 2
+
+
 def test_ticker_archive_keeps_shared_input_for_current_decision(storage):
     now = datetime(2026, 9, 27, 12, tzinfo=UTC)
     manifest = Jsonb({"inputs": {"quote": {"raw": "shared" * 1000}}})

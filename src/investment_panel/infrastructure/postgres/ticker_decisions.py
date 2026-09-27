@@ -13,6 +13,7 @@ import time
 from typing import Any, Iterable, Mapping
 from uuid import UUID
 
+import psycopg
 from psycopg.types.json import Jsonb
 
 from investment_panel.domain.decision import (
@@ -478,9 +479,12 @@ class TickerDecisionRepository:
                 if reuse_only:
                     raise ValueError("backdated evaluation cannot replace current ranking authority")
                 historical_rows = connection.execute("""
-                    SELECT instrument.symbol AS ticker, historical.*
-                    FROM analysis.ticker_decision_read historical
-                    JOIN catalog.instrument instrument ON instrument.id = historical.instrument_id
+                    SELECT historical.id, historical.decision_revision,
+                           historical.semantic_fingerprint, historical.evidence_state,
+                           manifest.verification_status
+                    FROM analysis.ticker_decision historical
+                    LEFT JOIN ops.storage_archive_manifest manifest
+                      ON manifest.id = historical.evidence_archive_manifest_id
                     WHERE historical.instrument_id = %s AND historical.as_of = %s
                       AND historical.status IN ('published', 'superseded')
                       AND (historical.semantic_fingerprint = %s OR historical.semantic_fingerprint IS NULL)
@@ -488,10 +492,22 @@ class TickerDecisionRepository:
                 """, [instrument["id"], decision.as_of, fingerprint]).fetchall()
                 for historical in historical_rows:
                     try:
-                        stored = _decision_from_row(historical)
-                    except (TypeError, ValueError, KeyError):
+                        with connection.transaction():
+                            historical_row = connection.execute("""
+                                SELECT instrument.symbol AS ticker, stored.*
+                                FROM analysis.ticker_decision_read stored
+                                JOIN catalog.instrument instrument ON instrument.id = stored.instrument_id
+                                WHERE stored.id = %s
+                            """, [historical["id"]]).fetchone()
+                            stored = _decision_from_row(historical_row)
+                    except (psycopg.Error, TypeError, ValueError, KeyError):
                         continue
-                    if semantic_decision_fingerprint(stored) != fingerprint:
+                    if historical["evidence_state"] == "archived":
+                        matches = (historical["semantic_fingerprint"] == fingerprint
+                                   and historical["verification_status"] == "verified")
+                    else:
+                        matches = semantic_decision_fingerprint(stored) == fingerprint
+                    if not matches:
                         continue
                     if historical["semantic_fingerprint"] is None:
                         connection.execute("""
