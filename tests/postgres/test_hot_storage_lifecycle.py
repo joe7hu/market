@@ -426,9 +426,11 @@ def test_completed_ticker_evidence_archives_exact_inputs_and_restores_typed_rows
         connection.execute("""UPDATE analysis.ticker_decision SET as_of = %s, status = 'superseded'
             WHERE id = %s""", [now - timedelta(days=40), old])
         context_hash = store_context(connection, {"revision": "market-first", "raw": "m" * 3000})
+        policy_hash = store_context(connection, {"blockers": ["legacy"], "raw": "r" * 3000})
         connection.execute("""UPDATE analysis.ticker_decision
-            SET market_state_context_hash = %s, market_state_snapshot = '{}'::jsonb
-            WHERE id = %s""", [context_hash, old])
+            SET market_state_context_hash = %s, market_state_snapshot = '{}'::jsonb,
+                risk_policy_context_hash = %s, risk_policy_snapshot = '{}'::jsonb
+            WHERE id = %s""", [context_hash, policy_hash, old])
     assert compact_input_batch(storage.runtime, execute=True)["compacted"] == 2
     if copy_pack:
         monkeypatch.setattr("investment_panel.infrastructure.postgres.row_archive.MAX_PACK_BYTES", 1024)
@@ -450,10 +452,15 @@ def test_completed_ticker_evidence_archives_exact_inputs_and_restores_typed_rows
     assert compact["input_payload_refs"] == {}
     assert compact["archived_input_refs"]
     assert compact["archived_context_refs"]["market"] == context_hash
+    assert compact["archived_context_refs"]["policy"] == policy_hash
     assert compact["market_state_context_hash"] is None
+    with storage.runtime.read() as connection:
+        legacy_summary = connection.execute("""SELECT market_state_snapshot, risk_policy_snapshot
+            FROM analysis.ticker_decision_read WHERE id = %s""", [old]).fetchone()
+    assert legacy_summary == {"market_state_snapshot": None, "risk_policy_snapshot": None}
     collected = archive.collect_for_decision(old, execute=True, backup_token=_verified_backup(storage))
     assert collected["payloads_released"] == 1
-    assert collected["contexts_released"] == 1
+    assert collected["contexts_released"] == 2
     with storage.runtime.read() as connection:
         assert connection.execute("SELECT count(*) AS n FROM analysis.decision_input_payload WHERE content_hash = %s",
                                   [next(iter(compact["archived_input_refs"].values()))]).fetchone()["n"] == 0
@@ -750,7 +757,9 @@ def test_ticker_compact_history_and_current_decision_work_without_nas(storage, m
         assert history["evidence_archive_manifest_id"] == result["manifest_id"]
         assert history["resolution"]["action"] == old.resolution.action.value
         assert history["input_manifest"]["trade_plan"] is None
-        compact_decision = repository.by_id(old_id)
+        with pytest.raises(ValueError, match="published ticker decision is missing"):
+            repository.by_id(old_id)
+        compact_decision = repository.historical_by_id(old_id)
         assert compact_decision.market_state_snapshot.snapshot_id == snapshot.snapshot_id
         assert compact_decision.market_state_snapshot.evidence_state == "archived"
         assert compact_decision.market_state_snapshot.availability == old.market_state_snapshot.availability

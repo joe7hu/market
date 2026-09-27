@@ -380,8 +380,10 @@ def upgrade() -> None:
 
         CREATE FUNCTION analysis.compact_market_snapshot(p_snapshot jsonb)
         RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
-          SELECT jsonb_build_object('evidence_state', 'archived')
+          SELECT CASE WHEN p_snapshot ?& ARRAY['snapshot_id', 'as_of', 'input_cutoff']
+            THEN jsonb_build_object('evidence_state', 'archived')
                  || COALESCE(jsonb_object_agg(part.key, part.value), '{}'::jsonb)
+            ELSE '{}'::jsonb END
           FROM jsonb_each(CASE WHEN jsonb_typeof(p_snapshot) = 'object'
             THEN p_snapshot ELSE '{}'::jsonb END) part
           WHERE part.key = ANY(ARRAY[
@@ -391,7 +393,9 @@ def upgrade() -> None:
         $$;
         CREATE FUNCTION analysis.compact_risk_policy_snapshot(p_snapshot jsonb)
         RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
-          SELECT COALESCE(jsonb_object_agg(part.key, part.value), '{}'::jsonb)
+          SELECT CASE WHEN p_snapshot ? 'policy_version'
+            THEN COALESCE(jsonb_object_agg(part.key, part.value), '{}'::jsonb)
+            ELSE '{}'::jsonb END
           FROM jsonb_each(CASE WHEN jsonb_typeof(p_snapshot) = 'object'
             THEN p_snapshot ELSE '{}'::jsonb END) part
           WHERE part.key = ANY(ARRAY[
@@ -625,13 +629,13 @@ def upgrade() -> None:
             d.input_manifest, d.opportunity_episode) AS resolution,
           d.policy_version, d.opportunity_episode_id, d.opportunity_cutoff,
           d.opportunity_episode, d.market_state_publication_id,
-          CASE WHEN d.evidence_state = 'archived' THEN d.market_state_snapshot
+          CASE WHEN d.evidence_state = 'archived' THEN NULLIF(d.market_state_snapshot, '{}'::jsonb)
                WHEN d.market_state_context_hash IS NULL THEN d.market_state_snapshot
                ELSE (SELECT context.payload FROM analysis.decision_context context
                      WHERE context.content_hash = d.market_state_context_hash)
           END AS market_state_snapshot,
           analysis.expand_decision_impacts(d.portfolio_impacts, d.evidence_refs) AS portfolio_impacts,
-          CASE WHEN d.evidence_state = 'archived' THEN d.risk_policy_snapshot
+          CASE WHEN d.evidence_state = 'archived' THEN NULLIF(d.risk_policy_snapshot, '{}'::jsonb)
                WHEN d.risk_policy_context_hash IS NULL THEN d.risk_policy_snapshot
                ELSE (SELECT context.payload FROM analysis.decision_context context
                      WHERE context.content_hash = d.risk_policy_context_hash)

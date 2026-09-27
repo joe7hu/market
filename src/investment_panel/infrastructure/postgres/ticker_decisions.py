@@ -656,14 +656,23 @@ class TickerDecisionRepository:
             return None
 
     def by_id(self, decision_id: str) -> TickerDecision:
-        """Read a published or superseded identity without a new cutoff."""
+        """Read a current published identity without a new cutoff."""
+        return self._read_by_id(decision_id, include_superseded=False)
+
+    def historical_by_id(self, decision_id: str) -> TickerDecision:
+        """Read a published decision after it has been superseded."""
+        return self._read_by_id(decision_id, include_superseded=True)
+
+    def _read_by_id(self, decision_id: str, *, include_superseded: bool) -> TickerDecision:
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute("""
                 SELECT instrument.symbol AS ticker, decision.*
                 FROM analysis.ticker_decision_read decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                WHERE decision.id = %s::uuid AND decision.status IN ('published', 'superseded')
-            """, [decision_id]).fetchone()
+                WHERE decision.id = %s::uuid
+                  AND (decision.status = 'published'
+                       OR (%s AND decision.status = 'superseded'))
+            """, [decision_id, include_superseded]).fetchone()
         if row is None:
             raise ValueError("published ticker decision is missing")
         return _decision_from_row(row)
