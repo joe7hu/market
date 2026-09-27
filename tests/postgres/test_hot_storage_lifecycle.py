@@ -1,6 +1,7 @@
 """End-to-end storage contracts against migrated PostgreSQL and a NAS fixture."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import gzip
@@ -1633,6 +1634,87 @@ def test_concurrent_option_paper_reference_prevents_compaction(storage):
         writer.result(timeout=5)
     with storage.runtime.read() as connection:
         assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_option_archive_rechecks_successor_after_decision_lane_changes(storage, monkeypatch):
+    now, decision_id = _completed_option_scan(storage)
+    token = _verified_backup(storage)
+    original_transaction = storage.runtime.transaction
+
+    @contextmanager
+    def change_lane_after_selection(profile=None):
+        with original_transaction(profile) as connection:
+            class ConnectionProxy:
+                def execute(self, query, params=None):
+                    result = connection.execute(query, params)
+                    if "decision.as_of >= (SELECT min(observed_at)" in query:
+                        with original_transaction() as writer:
+                            writer.execute("UPDATE analysis.decision SET lane = 'changed_lane' WHERE id = %s", [decision_id])
+                    return result
+
+                def __getattr__(self, name):
+                    return getattr(connection, name)
+
+            yield ConnectionProxy()
+
+    monkeypatch.setattr(storage.runtime, "transaction", change_lane_after_selection)
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                 backup_token=token)
+    assert result["status"] == "blocked_concurrent_change"
+    assert result["archived"] == 0
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s", [decision_id]).fetchone()["evidence_state"] == "local"
+
+
+def test_option_archive_holds_successor_lock_through_compaction(storage, monkeypatch):
+    now, decision_id = _completed_option_scan(storage)
+    token = _verified_backup(storage)
+    with storage.runtime.read() as connection:
+        successor_id = connection.execute("""
+            SELECT newer.id FROM analysis.decision older
+            JOIN analysis.decision newer ON newer.instrument_id = older.instrument_id
+              AND newer.id <> older.id AND newer.as_of > older.as_of
+            WHERE older.id = %s LIMIT 1
+        """, [decision_id]).fetchone()["id"]
+    original_transaction = storage.runtime.transaction
+    rechecked, resume, writer_started, writer_done = Event(), Event(), Event(), Event()
+
+    @contextmanager
+    def pause_after_recheck(profile=None):
+        with original_transaction(profile) as connection:
+            class ConnectionProxy:
+                def execute(self, query, params=None):
+                    result = connection.execute(query, params)
+                    if isinstance(query, str) and "FOR UPDATE OF newer, successor" in query:
+                        rechecked.set()
+                        assert resume.wait(10)
+                    return result
+
+                def __getattr__(self, name):
+                    return getattr(connection, name)
+
+            yield ConnectionProxy()
+
+    def update_successor():
+        writer_started.set()
+        with original_transaction() as connection:
+            connection.execute("UPDATE analysis.decision SET lane = lane WHERE id = %s", [successor_id])
+        writer_done.set()
+
+    monkeypatch.setattr(storage.runtime, "transaction", pause_after_recheck)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        archive = executor.submit(OptionEvidenceArchive(storage).run,
+                                  now=now, execute=True, backup_token=token)
+        assert rechecked.wait(5)
+        writer = executor.submit(update_successor)
+        assert writer_started.wait(5)
+        try:
+            assert not writer_done.wait(0.2)
+        finally:
+            resume.set()
+        assert archive.result(timeout=10)["archived"] == 1
+        writer.result(timeout=10)
+    assert writer_done.is_set()
 
 
 def test_large_option_detail_restores_from_typed_copy(storage, migrated_postgres_dsn):

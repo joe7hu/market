@@ -68,8 +68,7 @@ class OptionEvidenceArchive:
                     [CHECKPOINT],
                 ).fetchone()
                 cursor = dict(saved["cursor"] or {}) if saved else {}
-                lock = "FOR UPDATE OF decision, scan SKIP LOCKED" if execute else ""
-                rows = connection.execute(f"""
+                rows = connection.execute("""
                     SELECT scan.decision_id, decision.as_of, decision.run_id,
                            scan.snapshot_id, scan.contract_id, scan.quote_observed_at,
                            scan.relative_value_id, scan.synthetic_legs,
@@ -113,7 +112,6 @@ class OptionEvidenceArchive:
                                         AND task.status NOT IN
                                           ('succeeded', 'completed', 'failed', 'cancelled'))
                     ORDER BY decision.as_of, decision.id LIMIT %s
-                    {lock}
                 """, [reference - timedelta(days=30),
                       datetime.fromisoformat(cursor["as_of"]) if cursor.get("as_of")
                       else datetime.min.replace(tzinfo=UTC),
@@ -147,11 +145,51 @@ class OptionEvidenceArchive:
                     return {"phase": CHECKPOINT, "status": "eligible",
                             "eligible": len(rows), "dry_run": True}
                 selected = [row["decision_id"] for row in rows]
+                locked = connection.execute("""
+                    SELECT scan.decision_id, decision.as_of, decision.run_id,
+                           scan.snapshot_id, scan.contract_id, scan.quote_observed_at,
+                           scan.relative_value_id, scan.synthetic_legs,
+                           scan.primary_decision_id
+                    FROM analysis.option_decision scan
+                    JOIN analysis.decision decision ON decision.id = scan.decision_id
+                    WHERE scan.decision_id = ANY(%s) AND scan.evidence_state = 'local'
+                    ORDER BY decision.as_of, decision.id
+                    FOR UPDATE OF decision, scan SKIP LOCKED
+                """, [selected]).fetchall()
+                if locked != rows:
+                    return {"phase": CHECKPOINT, "status": "blocked_concurrent_change",
+                            "archived": 0, "skipped": [str(value) for value in selected],
+                            "dry_run": False}
                 run_ids = list({row["run_id"] for row in rows})
                 connection.execute(
                     "SELECT id FROM analysis.run WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
                     [run_ids],
                 ).fetchall()
+                eligible_ids = {row["id"] for row in connection.execute("""
+                    SELECT decision.id
+                    FROM analysis.decision decision
+                    JOIN analysis.option_decision scan ON scan.decision_id = decision.id
+                    JOIN analysis.run run ON run.id = decision.run_id
+                    WHERE decision.id = ANY(%s) AND decision.kind = 'option'
+                      AND scan.evidence_state = 'local' AND run.status = 'succeeded'
+                      AND decision.as_of >= scan.quote_observed_at
+                      AND EXISTS (SELECT 1 FROM analysis.run newer
+                                  JOIN analysis.decision successor
+                                    ON successor.run_id = newer.id
+                                   AND successor.kind = decision.kind
+                                   AND successor.instrument_id = decision.instrument_id
+                                   AND successor.lane IS NOT DISTINCT FROM decision.lane
+                                  JOIN analysis.option_decision successor_scan
+                                    ON successor_scan.decision_id = successor.id
+                                  WHERE newer.run_type = run.run_type
+                                    AND newer.input_cutoff > run.input_cutoff
+                                    AND newer.status = 'succeeded'
+                                  FOR UPDATE OF newer, successor)
+                """, [selected]).fetchall()}
+                if eligible_ids != set(selected):
+                    return {"phase": CHECKPOINT, "status": "blocked_concurrent_change",
+                            "archived": 0, "skipped": [str(value) for value in selected],
+                            "dry_run": False}
                 active = connection.execute("""
                     SELECT EXISTS (
                       SELECT 1 FROM app.paper_order paper
