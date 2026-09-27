@@ -259,6 +259,40 @@ def test_backdated_retry_cannot_reuse_superseded_decision(storage):
         ).fetchone()["count"] == 2
 
 
+def test_backdated_retry_reuses_exact_legacy_row_without_fingerprint(storage):
+    with storage.runtime.transaction() as connection:
+        reconcile_instrument(connection, "LEGACYLATE")
+    repository = TickerDecisionRepository(storage.runtime)
+    cutoff = datetime(2026, 9, 25, 14, tzinfo=UTC)
+    old = build_ticker_decision("LEGACYLATE", {}, as_of=cutoff)
+    old_id = repository.publish(old)["ticker_decision_id"]
+    repository.publish(build_ticker_decision("LEGACYLATE", {}, as_of=cutoff + timedelta(minutes=1)))
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET semantic_fingerprint = NULL WHERE id = %s", [old_id])
+    assert repository.publish(old)["ticker_decision_id"] == old_id
+    with storage.runtime.read() as connection:
+        row = connection.execute("SELECT semantic_fingerprint FROM analysis.ticker_decision WHERE id = %s", [old_id]).fetchone()
+        assert row["semantic_fingerprint"] is not None
+        assert connection.execute("SELECT count(*) FROM analysis.ticker_decision").fetchone()["count"] == 2
+
+
+def test_backdated_retry_does_not_reuse_malformed_or_quarantined_history(storage):
+    with storage.runtime.transaction() as connection:
+        reconcile_instrument(connection, "BADLATE")
+    repository = TickerDecisionRepository(storage.runtime)
+    cutoff = datetime(2026, 9, 25, 14, tzinfo=UTC)
+    old = build_ticker_decision("BADLATE", {}, as_of=cutoff)
+    old_id = repository.publish(old)["ticker_decision_id"]
+    repository.publish(build_ticker_decision("BADLATE", {}, as_of=cutoff + timedelta(minutes=1)))
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET tactical = '{}'::jsonb WHERE id = %s", [old_id])
+    replacement_id = repository.publish(old)["ticker_decision_id"]
+    assert replacement_id != old_id
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET status = 'quarantined' WHERE id = %s", [replacement_id])
+    assert repository.publish(old)["ticker_decision_id"] not in {old_id, replacement_id}
+
+
 def test_evidence_batch_budget_includes_expression_bytes(storage, monkeypatch):
     decision_id = _decision(storage.runtime)
     with storage.runtime.transaction() as connection:

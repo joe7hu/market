@@ -477,12 +477,27 @@ class TickerDecisionRepository:
             if prior is not None and decision.as_of < prior["as_of"]:
                 if reuse_only:
                     raise ValueError("backdated evaluation cannot replace current ranking authority")
-                historical = connection.execute("""
-                    SELECT id, decision_revision FROM analysis.ticker_decision
-                    WHERE instrument_id = %s AND as_of = %s AND semantic_fingerprint = %s
-                    ORDER BY published_at DESC NULLS LAST, id DESC LIMIT 1
-                """, [instrument["id"], decision.as_of, fingerprint]).fetchone()
-                if historical is not None:
+                historical_rows = connection.execute("""
+                    SELECT instrument.symbol AS ticker, historical.*
+                    FROM analysis.ticker_decision_read historical
+                    JOIN catalog.instrument instrument ON instrument.id = historical.instrument_id
+                    WHERE historical.instrument_id = %s AND historical.as_of = %s
+                      AND historical.status IN ('published', 'superseded')
+                      AND (historical.semantic_fingerprint = %s OR historical.semantic_fingerprint IS NULL)
+                    ORDER BY historical.published_at DESC NULLS LAST, historical.id DESC
+                """, [instrument["id"], decision.as_of, fingerprint]).fetchall()
+                for historical in historical_rows:
+                    try:
+                        stored = _decision_from_row(historical)
+                    except (TypeError, ValueError, KeyError):
+                        continue
+                    if semantic_decision_fingerprint(stored) != fingerprint:
+                        continue
+                    if historical["semantic_fingerprint"] is None:
+                        connection.execute("""
+                            UPDATE analysis.ticker_decision SET semantic_fingerprint = %s
+                            WHERE id = %s AND semantic_fingerprint IS NULL
+                        """, [fingerprint, historical["id"]])
                     _record_decision_checkpoint(connection, historical["id"], decision)
                     return {"status": "unchanged", "ticker_decision_id": str(historical["id"]),
                             "decision_revision": historical["decision_revision"]}
