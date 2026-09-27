@@ -4892,6 +4892,15 @@
             "title": "Decision Evidence",
             "type": "array"
           },
+          "evidence_state": {
+            "default": "local",
+            "enum": [
+              "local",
+              "archived"
+            ],
+            "title": "Evidence State",
+            "type": "string"
+          },
           "horizons": {
             "additionalProperties": {
               "items": {

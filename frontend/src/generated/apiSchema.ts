@@ -3854,6 +3854,12 @@ export interface components {
              * @default []
              */
             decision_evidence: components["schemas"]["MarketEvidenceAssessment"][];
+            /**
+             * Evidence State
+             * @default local
+             * @enum {string}
+             */
+            evidence_state: "local" | "archived";
             /** Horizons */
             horizons?: {
                 [key: string]: components["schemas"]["MarketDimensionState"][];
