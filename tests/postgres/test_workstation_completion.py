@@ -14,11 +14,13 @@ from investment_panel.infrastructure.postgres.panel_publications import publishe
 from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
 from investment_panel.infrastructure.postgres.phase2 import Phase2Repository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 from investment_panel.infrastructure.postgres.workstation import (
     WorkstationRepository,
     service_blocking_experiment_incidents,
 )
 from investment_panel.domain.market.phase2 import PITObservation
+from investment_panel.domain.decision import build_ticker_decision
 
 
 @pytest.fixture
@@ -50,6 +52,40 @@ def test_status_uses_real_queries_and_distinguishes_no_data_from_failed_read(run
     assert result["failed_reads"] == []
     assert result["market"]["status"] == "not_published"
     assert result["paper"]["status"] == "available" and result["paper"]["counts"] == {}
+
+
+def test_status_reads_latest_normalized_decision_with_history(runtime):
+    symbol = "STATUSREF"
+    with runtime.transaction() as connection:
+        reconcile_instrument(connection, symbol)
+    repository = TickerDecisionRepository(runtime)
+    as_of = datetime.now(UTC) - timedelta(hours=1)
+    latest_id = None
+    for offset in range(3):
+        reference = as_of + timedelta(minutes=offset)
+        latest_id = repository.publish(build_ticker_decision(symbol, {
+            "decision_queue": [{"symbol": symbol, "stance": "NEUTRAL",
+                                "available_at": reference.isoformat()}],
+        }, as_of=reference))["ticker_decision_id"]
+    status = WorkstationRepository(runtime).status(
+        AppConfig(watchlist=[{"symbol": symbol}]))
+    assert "decision_service" not in status["failed_reads"]
+    item = next(row for row in status["decision_service"]["instruments"]
+                if row["symbol"] == symbol)
+    assert datetime.fromisoformat(item["decision_as_of"]) == as_of + timedelta(minutes=2)
+    with runtime.transaction() as connection:
+        connection.execute(
+            "ALTER TABLE analysis.ticker_decision DISABLE TRIGGER ticker_decision_input_refs_valid")
+        connection.execute("""
+            UPDATE analysis.ticker_decision
+            SET input_payload_refs = jsonb_build_object('unshown', %s::text)
+            WHERE id = %s::uuid
+        """, ["0" * 64, latest_id])
+        connection.execute(
+            "ALTER TABLE analysis.ticker_decision ENABLE TRIGGER ticker_decision_input_refs_valid")
+    failed = WorkstationRepository(runtime).status(
+        AppConfig(watchlist=[{"symbol": symbol}]))
+    assert "decision_service" in failed["failed_reads"]
 
 
 def test_unpriceable_experiment_mark_does_not_call_a_healthy_worker_down():

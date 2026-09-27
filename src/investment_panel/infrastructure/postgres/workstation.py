@@ -210,14 +210,35 @@ class WorkstationRepository:
                     ORDER BY feature.as_of DESC, feature.id DESC LIMIT 1
                 ) feature ON true
                 LEFT JOIN LATERAL (
-                    SELECT decision.as_of, decision.published_at, decision.risk_policy_snapshot,
-                           decision.input_manifest->'reference_signal' AS reference_signal,
-                           decision.input_manifest->'opportunity_rank' AS opportunity_rank,
-                           decision.input_manifest->'trade_plan' AS trade_plan
-                    FROM analysis.ticker_decision_read decision
-                    WHERE decision.instrument_id = monitored.id AND decision.status = 'published'
-                      AND decision.published_at <= %s AND decision.as_of <= %s
-                    ORDER BY decision.published_at DESC, decision.id DESC LIMIT 1
+                    SELECT decision.as_of, decision.published_at,
+                           CASE WHEN decision.evidence_state = 'archived'
+                                THEN NULLIF(decision.risk_policy_snapshot, '{}'::jsonb)
+                                WHEN decision.risk_policy_context_hash IS NULL
+                                THEN decision.risk_policy_snapshot
+                                ELSE (SELECT context.payload FROM analysis.decision_context context
+                                      WHERE context.content_hash = decision.risk_policy_context_hash)
+                           END AS risk_policy_snapshot,
+                           evidence.manifest->'reference_signal' AS reference_signal,
+                           evidence.manifest->'opportunity_rank' AS opportunity_rank,
+                           evidence.manifest->'trade_plan' AS trade_plan
+                    FROM (
+                        SELECT decision.* FROM analysis.ticker_decision decision
+                        WHERE decision.instrument_id = monitored.id AND decision.status = 'published'
+                          AND decision.published_at <= %s AND decision.as_of <= %s
+                        ORDER BY decision.published_at DESC, decision.id DESC LIMIT 1
+                    ) decision
+                    CROSS JOIN LATERAL (
+                        SELECT analysis.expand_decision_manifest(
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM jsonb_each_text(decision.input_payload_refs) ref
+                                LEFT JOIN analysis.decision_input_payload payload
+                                  ON payload.content_hash = ref.value
+                                WHERE payload.content_hash IS NULL
+                            ) THEN analysis.expand_decision_inputs(
+                                decision.input_manifest, decision.input_payload_refs)
+                            ELSE decision.input_manifest - 'inputs' END,
+                            decision.evidence_refs, decision.opportunity_episode) AS manifest
+                    ) evidence
                 ) decision ON true
                 ORDER BY monitored.symbol
             """, [[item["symbol"] for item in universe], now, now, now, now, now]) if universe else []
