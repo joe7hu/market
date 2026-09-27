@@ -34,12 +34,11 @@ def published_tables(
                 WHERE item.model_name = ANY(%s) AND publication.status = 'published'
                 ORDER BY item.model_name, publication.published_at DESC NULLS LAST, item.publication_id DESC
             ), compact_current AS MATERIALIZED (
-                SELECT item.model_name, payload.payload,
+                SELECT item.model_name, item.payload,
                        item.publication_id::text AS publication_id, publication.published_at, item.rank
                 FROM compact_latest latest
-                JOIN app.current_publication_item item
+                JOIN app.current_publication_item_read item
                   ON item.publication_id = latest.publication_id AND item.model_name = latest.model_name
-                JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
                 JOIN app.publication publication ON publication.id = item.publication_id
             ), current_publication AS MATERIALIZED (
                 SELECT id, published_at

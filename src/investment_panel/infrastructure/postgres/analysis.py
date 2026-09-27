@@ -25,6 +25,7 @@ from investment_panel.infrastructure.postgres.opportunity_episodes import (
     scorecard_truth_cohort,
 )
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.infrastructure.postgres.decision_storage import lock_decision_evidence_writer
 from investment_panel.domain.decision import StrategyForecast, strategy_forecast_id_for_payload
 
 
@@ -177,10 +178,9 @@ def current_option_publication_result(
         ), source_rows AS MATERIALIZED (
             SELECT item.model_name, item.stable_key, item.rank,
                    chosen.id::text AS publication_id, chosen.published_at,
-                   chosen.analysis_run_id, payload.payload
+                   chosen.analysis_run_id, item.payload
             FROM chosen_publication chosen
-            JOIN app.publication_bundle_item item ON item.bundle_id = chosen.bundle_id
-            JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+            JOIN app.publication_bundle_item_read item ON item.bundle_id = chosen.bundle_id
             WHERE chosen.bundle_id IS NOT NULL AND item.model_name = %s
             UNION ALL
             SELECT item.model_name, item.stable_key, item.rank,
@@ -1029,6 +1029,20 @@ class AnalysisRepository:
                         "strategy authority changed during analysis; publication must be recomputed"
                     )
             bundle_rows = _bundle_rows(prepared)
+            if scope == "ticker-opportunity-ranking":
+                lock_decision_evidence_writer(connection)
+                for item in bundle_rows:
+                    if item["model_name"] not in {
+                        "instrument_state_snapshot", "alpha_signal", "opportunity_rank", "trade_plan"
+                    }:
+                        continue
+                    digest = connection.execute(
+                        "SELECT analysis.intern_decision_payload(%s::jsonb) AS hash",
+                        [Jsonb(item["payload"])],
+                    ).fetchone()["hash"]
+                    item["decision_payload_hash"] = digest
+                    item["content_hash"] = None
+                    item["payload"] = None
             bundle_hash = _hash({"scope": scope, "items": bundle_rows})
             existing = connection.execute(
                 """
@@ -1117,18 +1131,20 @@ class AnalysisRepository:
                         INSERT INTO app.publication_payload (content_hash, payload)
                         VALUES (%s, %s) ON CONFLICT (content_hash) DO NOTHING
                         """,
-                        [[row["content_hash"], Jsonb(row["payload"])] for row in bundle_rows],
+                        [[row["content_hash"], Jsonb(row["payload"])] for row in bundle_rows
+                         if row["content_hash"] is not None],
                     )
                     cursor.executemany(
                         """
                         INSERT INTO app.publication_bundle_item
                             (bundle_id, model_name, stable_key, rank, instrument_id,
-                             content_hash, canonical_publication_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                             content_hash, canonical_publication_id, decision_payload_hash)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         [[bundle_id, row["model_name"], row["stable_key"], row["rank"],
                           row["instrument_id"], row["content_hash"],
-                          row["canonical_publication_id"]] for row in bundle_rows],
+                          row["canonical_publication_id"], row["decision_payload_hash"]]
+                         for row in bundle_rows],
                     )
             publication = connection.execute(
                 """
@@ -1175,10 +1191,9 @@ class AnalysisRepository:
                 return None, {}
             if publication["bundle_id"] is not None:
                 rows = connection.execute("""
-                    SELECT item.model_name, payload.payload,
+                    SELECT item.model_name, item.payload,
                            item.canonical_publication_id::text AS canonical_publication_id
-                    FROM app.publication_bundle_item item
-                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    FROM app.publication_bundle_item_read item
                     WHERE item.bundle_id = %s AND item.model_name IN
                       ('instrument_state_snapshot', 'alpha_signal', 'opportunity_rank', 'trade_plan')
                     ORDER BY item.model_name, item.rank
@@ -1217,11 +1232,10 @@ class AnalysisRepository:
             else:
                 rows = connection.execute(
                     """
-                    SELECT payload.payload, publication.id::text AS publication_id,
+                    SELECT item.payload, publication.id::text AS publication_id,
                            bundle_item.canonical_publication_id::text AS canonical_publication_id,
                            publication.published_at
-                    FROM app.current_publication_item item
-                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    FROM app.current_publication_item_read item
                     JOIN app.publication publication ON publication.id = item.publication_id
                     LEFT JOIN app.publication_bundle_item bundle_item
                       ON bundle_item.bundle_id = publication.bundle_id
@@ -1307,9 +1321,8 @@ class AnalysisRepository:
             if predecessor["bundle_id"] is not None:
                 rows = connection.execute(
                     """
-                    SELECT payload.payload
-                    FROM app.publication_bundle_item item
-                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    SELECT item.payload
+                    FROM app.publication_bundle_item_read item
                     WHERE item.bundle_id = %s AND item.model_name = %s
                     ORDER BY item.rank
                     """,
@@ -1595,6 +1608,7 @@ def _bundle_rows(prepared: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[di
                 "rank": rank,
                 "instrument_id": row.get("instrument_id"),
                 "canonical_publication_id": row.get("canonical_publication_id"),
+                "decision_payload_hash": None,
                 "content_hash": _hash(payload),
                 "payload": payload,
             })
@@ -1614,8 +1628,10 @@ def _replace_current_projection(
     connection.execute(
         """
         INSERT INTO app.current_publication_item
-            (scope, publication_id, model_name, stable_key, rank, instrument_id, content_hash)
-        SELECT %s, %s, model_name, stable_key, rank, instrument_id, content_hash
+            (scope, publication_id, model_name, stable_key, rank, instrument_id,
+             content_hash, decision_payload_hash)
+        SELECT %s, %s, model_name, stable_key, rank, instrument_id,
+               content_hash, decision_payload_hash
         FROM app.publication_bundle_item
         WHERE bundle_id = %s
         """,
@@ -1628,9 +1644,8 @@ def _publication_payload_rows(connection: Any, row: Mapping[str, Any]) -> Sequen
         return connection.execute(
             """
             SELECT item.model_name, item.rank, item.canonical_publication_id,
-                   payload.payload
-            FROM app.publication_bundle_item item
-            JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                   item.payload
+            FROM app.publication_bundle_item_read item
             WHERE item.bundle_id = %s
             ORDER BY item.model_name, item.rank
             """,

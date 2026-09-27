@@ -488,18 +488,17 @@ class TickerPaperExecutionRepository:
         authority_rows = connection.execute(
             """
             SELECT item.model_name, publication.id::text AS publication_id,
-                   payload.payload, publication.published_at, run.input_cutoff
+                   item.payload, publication.published_at, run.input_cutoff
             FROM app.publication publication
-            JOIN app.publication_bundle_item item ON item.bundle_id = publication.bundle_id
-            JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+            JOIN app.publication_bundle_item_read item ON item.bundle_id = publication.bundle_id
             JOIN analysis.run run ON run.id = publication.analysis_run_id
             WHERE publication.id = %s::uuid
               AND publication.scope = 'ticker-opportunity-ranking'
               AND item.model_name = ANY(%s)
               AND publication.status IN ('published', 'superseded')
-              AND payload.payload->>'ticker' = %s
-              AND payload.payload->>'decision_revision' = %s
-              AND payload.payload->>'opportunity_episode_id' = %s
+              AND item.payload->>'ticker' = %s
+              AND item.payload->>'decision_revision' = %s
+              AND item.payload->>'opportunity_episode_id' = %s
             ORDER BY item.model_name, publication.published_at DESC, item.rank
             """,
             [decision.trade_plan.publication_id if decision.trade_plan else None,

@@ -26,12 +26,14 @@ class PublicationArchive:
         if relation not in {
             "app.publication", "app.publication_bundle", "app.publication_bundle_item",
             "app.publication_payload", "app.publication_item", "analysis.run",
+            "analysis.decision_input_payload",
         }:
             raise ValueError("publication archive relation is not allowed")
         # Deterministic PK order makes retries reuse packs instead of creating
         # millions of tiny files. Memory is bounded inside RowArchive.
         order = {"app.publication_bundle_item": "source.bundle_id, source.model_name, source.stable_key",
                  "app.publication_payload": "source.content_hash",
+                 "analysis.decision_input_payload": "source.content_hash",
                  "app.publication_item": "source.publication_id, source.model_name, source.stable_key"}.get(relation, "source.id")
         with connection.cursor(name=f"archive_{uuid4().hex}") as cursor:
             # Bundle items are compact references; fetch them in small groups
@@ -56,7 +58,8 @@ class PublicationArchive:
             cursor.execute("""
                 SELECT to_jsonb(source)::text AS row_json
                 FROM (SELECT DISTINCT content_hash FROM app.publication_bundle_item
-                      WHERE bundle_id = ANY(%s) ORDER BY content_hash) hashes
+                      WHERE bundle_id = ANY(%s) AND content_hash IS NOT NULL
+                      ORDER BY content_hash) hashes
                 CROSS JOIN LATERAL (
                     SELECT * FROM app.publication_payload payload
                     WHERE payload.content_hash = hashes.content_hash OFFSET 0
@@ -65,6 +68,14 @@ class PublicationArchive:
             """, [bundle_ids])
             RowArchive(self.service, kind="publications").write(
                 connection, "app.publication_payload", cursor)
+        decision_hashes = [row["decision_payload_hash"] for row in connection.execute("""
+            SELECT DISTINCT decision_payload_hash FROM app.publication_bundle_item
+            WHERE bundle_id = ANY(%s) AND decision_payload_hash IS NOT NULL
+            ORDER BY decision_payload_hash
+        """, [bundle_ids]).fetchall()]
+        if decision_hashes:
+            self.rows(connection, "analysis.decision_input_payload",
+                      "source.content_hash = ANY(%s)", [decision_hashes])
 
     def publications(self, connection: Any, candidates: list[Any]) -> list[Any]:
         """Lock publisher scopes, recheck status, and archive exact candidates."""

@@ -101,6 +101,68 @@ def test_storage_forecast_keeps_fallback_until_three_distinct_days(storage):
     assert forecast["forecast_30d_free_bytes"] <= 79 * 1024**3
 
 
+def test_storage_account_reports_old_local_evidence_bytes_separately(storage):
+    decision_id = _decision(storage.runtime, "protected-old", Jsonb({"inputs": {"raw": "x" * 4096}}))
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET as_of = now() - interval '40 days' WHERE id = %s",
+                           [decision_id])
+    account = storage.account()
+    assert account["protected_bytes"] > 0
+    assert account["protected_rows"]["ticker_decisions"] >= 1
+    assert account["protected_bytes_status"] == "old_local_row_lower_bound_excludes_shared_dependencies"
+
+
+def test_representative_busy_day_replay_measures_unique_writes(storage):
+    symbols = [f"BUSY{i:03d}" for i in range(100)]
+    at = datetime(2026, 9, 25, 14, tzinfo=UTC)
+    with storage.runtime.transaction() as connection:
+        for symbol in symbols:
+            reconcile_instrument(connection, symbol)
+    decisions = TickerDecisionRepository(storage.runtime)
+    analysis = AnalysisRepository(storage.runtime)
+    published_decisions = unchanged = 0
+    publication_ids = []
+    for check in range(3):
+        check_at = at + timedelta(minutes=check)
+        ranks = []
+        for index, symbol in enumerate(symbols):
+            corrected = check == 2 and index < 10
+            quote = {"symbol": symbol, "price": 101 if corrected else 100,
+                     "observed_at": at - timedelta(minutes=1),
+                     "available_at": at - timedelta(minutes=1), "confirmed": True}
+            result = decisions.publish(build_ticker_decision(symbol, {"quotes": [quote]}, as_of=check_at))
+            published_decisions += result["status"] == "published"
+            unchanged += result["status"] == "unchanged"
+            ranks.append({"ticker": symbol, "stable_key": symbol, "trade_rank": index + 1,
+                          "source_price": quote["price"]})
+        run_id = analysis.start_run("ticker-opportunity-ranking", input_cutoff=check_at,
+                                    code_version="busy-day.v1", inputs={"source_day": at.date().isoformat(),
+                                                                          "revision": int(check == 2)})
+        publication_ids.append(analysis.publish(run_id, "ticker-opportunity-ranking",
+                                                 {"opportunity_rank": ranks}))
+    with storage.runtime.read() as connection:
+        measured = connection.execute("""
+            SELECT
+              (SELECT count(*) FROM analysis.ticker_decision) AS decisions,
+              (SELECT count(*) FROM analysis.ticker_decision_checkpoint) AS checkpoints,
+              (SELECT count(*) FROM analysis.decision_input_payload) AS unique_payloads,
+              (SELECT COALESCE(sum(pg_column_size(payload)), 0)
+               FROM analysis.decision_input_payload) AS unique_payload_bytes,
+              (SELECT count(*) FROM app.publication) AS publications,
+              (SELECT count(*) FROM app.publication_bundle_item) AS publication_items,
+              (SELECT count(*) FROM app.publication_payload) AS duplicate_publication_payloads
+        """).fetchone()
+    assert published_decisions == measured["decisions"] == 110
+    assert unchanged == 190
+    assert publication_ids[0] == publication_ids[1] != publication_ids[2]
+    assert measured["publications"] == 2
+    assert measured["publication_items"] == 200
+    assert measured["duplicate_publication_payloads"] == 0
+    assert measured["unique_payload_bytes"] > 0
+    print("BUSY_DAY_REPLAY=" + json.dumps({"evaluations": 300, "decision_writes": published_decisions,
+        "unchanged_checks": unchanged, **dict(measured)}, default=int, sort_keys=True))
+
+
 def test_input_normalization_lossless_precision_sharing_and_restart(storage):
     # Pass PostgreSQL JSON text directly: Python float must never round this.
     raw = '{"inputs":{"fundamentals":[{"raw":"' + "中文" * 1500 + '","exact":0.12345678901234567890123456789,"revision":null}],"quote":[1,2,null]},"trade_plan":{"id":"keep"},"input_hash":"original"}'
@@ -755,7 +817,7 @@ def test_hot_retention_pins_local_synthetic_leg_quote(storage):
         assert quote is not None and quote["provider_payload"]["precise"] == "unchanged"
 
 
-def test_option_scan_with_unsupported_link_stays_local_without_stalling(storage):
+def test_option_scan_with_primary_link_restores_parent_without_compacting_it(storage, migrated_postgres_dsn):
     now, decision_id = _completed_option_scan(storage)
     with storage.runtime.transaction() as connection:
         successor = connection.execute("""
@@ -765,10 +827,152 @@ def test_option_scan_with_unsupported_link_stays_local_without_stalling(storage)
         """, [decision_id]).fetchone()["id"]
         connection.execute("UPDATE analysis.option_decision SET primary_decision_id = %s WHERE decision_id = %s",
                            [successor, decision_id])
-    assert OptionEvidenceArchive(storage).run(now=now)["status"] == "pass_complete"
+        original = connection.execute(
+            "SELECT to_jsonb(scan)::text AS row_json FROM analysis.option_decision scan WHERE decision_id = %s",
+            [successor],
+        ).fetchone()["row_json"]
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                backup_token=_verified_backup(storage))
+    assert result["archived"] == 1
+    receipt = OptionEvidenceArchive(storage).restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        restored = connection.execute(
+            f"SELECT to_jsonb(scan)::text FROM {receipt['staging_schema']}.analysis_option_decision scan "
+            "WHERE decision_id = %s", [successor],
+        ).fetchone()[0]
+    assert restored == original
     with storage.runtime.read() as connection:
         assert connection.execute("SELECT evidence_state FROM analysis.option_decision WHERE decision_id = %s",
-                                  [decision_id]).fetchone()["evidence_state"] == "local"
+                                  [successor]).fetchone()["evidence_state"] == "local"
+
+
+def test_completed_option_scan_with_thesis_archives_and_restores_exact_parent(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        instrument_id = connection.execute(
+            "SELECT instrument_id FROM analysis.decision WHERE id = %s", [decision_id]
+        ).fetchone()["instrument_id"]
+        thesis_id = connection.execute("""
+            INSERT INTO app.thesis (instrument_id, revision, status, thesis)
+            VALUES (%s, 1, 'superseded', %s::jsonb) RETURNING id
+        """, [instrument_id, '{"exact":0.12345678901234567890123456789,"reason":"old"}']).fetchone()["id"]
+        connection.execute("UPDATE analysis.option_decision SET thesis_id = %s WHERE decision_id = %s",
+                           [thesis_id, decision_id])
+        original = connection.execute("SELECT to_jsonb(thesis)::text AS row_json FROM app.thesis thesis WHERE id = %s",
+                                      [thesis_id]).fetchone()["row_json"]
+    archived = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                  backup_token=_verified_backup(storage))
+    assert archived["archived"] == 1
+    receipt = OptionEvidenceArchive(storage).restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        restored = connection.execute(
+            f"SELECT to_jsonb(thesis)::text FROM {receipt['staging_schema']}.app_thesis thesis WHERE id = %s",
+            [thesis_id],
+        ).fetchone()[0]
+    assert restored == original
+
+
+def test_option_scan_thesis_revision_lineage_restores_exact_parents(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        instrument_id = connection.execute(
+            "SELECT instrument_id FROM analysis.decision WHERE id = %s", [decision_id]
+        ).fetchone()["instrument_id"]
+        parent_id = connection.execute("""
+            INSERT INTO app.thesis (instrument_id, revision, status, thesis)
+            VALUES (%s, 1, 'superseded', '{}'::jsonb) RETURNING id
+        """, [instrument_id]).fetchone()["id"]
+        child_id = connection.execute("""
+            INSERT INTO app.thesis (instrument_id, revision, status, thesis, superseded_revision_id)
+            VALUES (%s, 2, 'superseded', '{}'::jsonb, %s) RETURNING id
+        """, [instrument_id, parent_id]).fetchone()["id"]
+        connection.execute("UPDATE analysis.option_decision SET thesis_id = %s WHERE decision_id = %s",
+                           [child_id, decision_id])
+        original = connection.execute("SELECT to_jsonb(thesis)::text AS row_json FROM app.thesis thesis WHERE id = %s",
+                                      [parent_id]).fetchone()["row_json"]
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                backup_token=_verified_backup(storage))
+    assert result["archived"] == 1
+    receipt = OptionEvidenceArchive(storage).restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        restored = connection.execute(
+            f"SELECT to_jsonb(thesis)::text FROM {receipt['staging_schema']}.app_thesis thesis WHERE id = %s",
+            [parent_id],
+        ).fetchone()[0]
+    assert restored == original
+
+
+def test_option_scan_thesis_automation_restores_exact_parent(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        instrument_id = connection.execute(
+            "SELECT instrument_id FROM analysis.decision WHERE id = %s", [decision_id]
+        ).fetchone()["instrument_id"]
+        automation_id = connection.execute("""
+            INSERT INTO app.thesis_automation_run
+              (instrument_id, status, evidence_snapshot, cost_usd)
+            VALUES (%s, 'succeeded', %s::jsonb, 0.123456) RETURNING id
+        """, [instrument_id, '[{"exact":0.12345678901234567890123456789}]']).fetchone()["id"]
+        thesis_id = connection.execute("""
+            INSERT INTO app.thesis (instrument_id, revision, status, thesis, automation_run_id)
+            VALUES (%s, 1, 'superseded', '{}'::jsonb, %s) RETURNING id
+        """, [instrument_id, automation_id]).fetchone()["id"]
+        connection.execute("UPDATE analysis.option_decision SET thesis_id = %s WHERE decision_id = %s",
+                           [thesis_id, decision_id])
+        original = connection.execute(
+            "SELECT to_jsonb(run)::text AS row_json FROM app.thesis_automation_run run WHERE id = %s",
+            [automation_id],
+        ).fetchone()["row_json"]
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                backup_token=_verified_backup(storage))
+    assert result["archived"] == 1
+    receipt = OptionEvidenceArchive(storage).restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        restored = connection.execute(
+            f"SELECT to_jsonb(run)::text FROM {receipt['staging_schema']}.app_thesis_automation_run run WHERE id = %s",
+            [automation_id],
+        ).fetchone()[0]
+    assert restored == original
+
+
+def test_option_scan_thesis_agent_task_restores_run_and_task(storage, migrated_postgres_dsn):
+    now, decision_id = _completed_option_scan(storage)
+    with storage.runtime.transaction() as connection:
+        instrument_id = connection.execute(
+            "SELECT instrument_id FROM analysis.decision WHERE id = %s", [decision_id]
+        ).fetchone()["instrument_id"]
+        run_id = connection.execute("""
+            INSERT INTO analysis.agent_run (provider, model, trigger, started_at, finished_at, status, cost_usd)
+            VALUES ('fixture', 'fixture', 'test', %s, %s, 'succeeded', 0.123456) RETURNING id
+        """, [now - timedelta(days=40), now - timedelta(days=40)]).fetchone()["id"]
+        task_id = connection.execute("""
+            INSERT INTO analysis.agent_task
+              (agent_run_id, decision_id, task_kind, status, request, result)
+            VALUES (%s, %s, 'option_thesis', 'completed', %s::jsonb, %s::jsonb) RETURNING id
+        """, [run_id, decision_id, '{"exact":0.12345678901234567890123456789}', '{}']).fetchone()["id"]
+        thesis_id = connection.execute("""
+            INSERT INTO app.thesis (instrument_id, revision, status, thesis, source_agent_task_id)
+            VALUES (%s, 1, 'superseded', '{}'::jsonb, %s) RETURNING id
+        """, [instrument_id, task_id]).fetchone()["id"]
+        connection.execute("UPDATE analysis.option_decision SET thesis_id = %s WHERE decision_id = %s",
+                           [thesis_id, decision_id])
+        original = connection.execute(
+            "SELECT to_jsonb(task)::text AS row_json FROM analysis.agent_task task WHERE id = %s", [task_id]
+        ).fetchone()["row_json"]
+    result = OptionEvidenceArchive(storage).run(now=now, execute=True,
+                                                backup_token=_verified_backup(storage))
+    assert result["archived"] == 1
+    receipt = OptionEvidenceArchive(storage).restore_scan(decision_id, destination_dsn=migrated_postgres_dsn)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        restored = connection.execute(
+            f"SELECT to_jsonb(task)::text FROM {receipt['staging_schema']}.analysis_agent_task task WHERE id = %s",
+            [task_id],
+        ).fetchone()[0]
+        assert connection.execute(
+            f"SELECT count(*) FROM {receipt['staging_schema']}.analysis_agent_run WHERE id = %s",
+            [run_id],
+        ).fetchone()[0] == 1
+    assert restored == original
 
 
 def test_option_scan_referenced_by_newer_local_scan_stays_local(storage):

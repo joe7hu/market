@@ -277,7 +277,6 @@ def _publication_candidates(
                    ) AS superseded_rank
             FROM app.publication
             WHERE status = 'superseded'
-              AND scope <> 'ticker-outcome-attribution'
         )
         SELECT id
         FROM ranked
@@ -319,17 +318,13 @@ def _delete_publications_and_orphaned_content(connection: Any, candidates: list[
     bundle_ids = sorted({row["bundle_id"] for row in deleted if row["bundle_id"] is not None})
     if not bundle_ids:
         return {}
-    content_hashes = [
-        row["content_hash"]
-        for row in connection.execute(
-            """
-            SELECT content_hash
-            FROM app.publication_bundle_item
-            WHERE bundle_id = ANY(%s)
-            """,
-            [bundle_ids],
-        ).fetchall()
-    ]
+    refs = connection.execute(
+        "SELECT content_hash, decision_payload_hash FROM app.publication_bundle_item "
+        "WHERE bundle_id = ANY(%s)", [bundle_ids],
+    ).fetchall()
+    content_hashes = [row["content_hash"] for row in refs if row["content_hash"] is not None]
+    decision_hashes = sorted({row["decision_payload_hash"] for row in refs
+                              if row["decision_payload_hash"] is not None})
     bundles = connection.execute(
         """
         DELETE FROM app.publication_bundle bundle
@@ -342,6 +337,12 @@ def _delete_publications_and_orphaned_content(connection: Any, candidates: list[
     payloads = _delete_payload_hashes(connection, content_hashes)
     if payloads:
         result["publication_payloads"] = payloads
+    for start in range(0, len(decision_hashes), 1000):
+        removed = connection.execute(
+            "SELECT analysis.gc_archived_decision_payloads(%s::text[]) AS removed",
+            [decision_hashes[start:start + 1000]],
+        ).fetchone()["removed"]
+        result["decision_payloads"] = result.get("decision_payloads", 0) + int(removed)
     return result
 
 

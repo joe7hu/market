@@ -20,12 +20,13 @@ RELATIONS = frozenset({
     "ingest.source", "ingest.run", "ingest.payload", "catalog.instrument",
     "raw.option_capture_generation",
     "analysis.hypothesis", "analysis.experiment_family", "analysis.strategy_revision",
+    "analysis.agent_experiment", "analysis.agent_run", "analysis.agent_task",
     "raw.option_quote", "analysis.option_relative_value", "analysis.run",
     "analysis.option_relative_value_verification",
     "analysis.ticker_decision", "analysis.option_decision", "analysis.decision_evidence",
     "analysis.decision_input_payload", "analysis.decision_context", "analysis.strategy_forecast",
     "analysis.option_feature", "analysis.decision", "raw.option_snapshot",
-    "catalog.option_contract", "app.publication", "app.publication_bundle",
+    "catalog.option_contract", "app.thesis_automation_run", "app.thesis", "app.publication", "app.publication_bundle",
     "app.publication_bundle_item", "app.publication_payload", "app.publication_item",
 })
 
@@ -53,14 +54,15 @@ class RowArchive:
         def flush() -> None:
             metadata = {"archive_contract": "postgres-row-pack.v1", "columns": columns,
                         "source_database": dict(identity)}
-            if relation == "analysis.run":
-                metadata["source_row_ids"] = [json.loads(entry["row_json"])["id"] for entry in pack]
+            if relation in {"analysis.run", "analysis.decision_input_payload"}:
+                key = "id" if relation == "analysis.run" else "content_hash"
+                metadata["source_row_ids"] = [json.loads(entry["row_json"])[key] for entry in pack]
             artifact = self.service._write_json_gzip(
                 self.kind, pack, source_relation=relation, row_count=len(pack),
                 metadata=metadata,
             )
             manifest_id = int(artifact["manifest_id"])
-            if relation == "analysis.run":
+            if relation in {"analysis.run", "analysis.decision_input_payload"}:
                 # Refresh metadata on content-addressed retries created before
                 # run-level archive references were recorded.
                 self.service._update_manifest_metadata(manifest_id, {"source_row_ids": metadata["source_row_ids"]})

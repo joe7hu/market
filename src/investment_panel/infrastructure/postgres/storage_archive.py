@@ -102,13 +102,26 @@ class StorageArchiveService:
             """).fetchone()
             backlog = connection.execute("""
                 SELECT
-                  (SELECT count(*) FROM analysis.ticker_decision
-                   WHERE as_of < now() - interval '30 days'
-                     AND evidence_state = 'local') AS decisions,
-                  (SELECT count(*) FROM analysis.option_decision scan
-                   JOIN analysis.decision decision ON decision.id = scan.decision_id
-                   WHERE decision.as_of < now() - interval '30 days'
-                     AND scan.evidence_state = 'local') AS option_scans
+                  ticker.count AS decisions, ticker.bytes AS decision_bytes,
+                  options.count AS option_scans, options.bytes AS option_bytes,
+                  evidence.bytes AS option_evidence_bytes
+                FROM (SELECT count(*) AS count,
+                             COALESCE(sum(pg_column_size(decision)), 0)::bigint AS bytes
+                      FROM analysis.ticker_decision decision
+                      WHERE as_of < now() - interval '30 days'
+                        AND evidence_state = 'local') ticker
+                CROSS JOIN (SELECT count(*) AS count,
+                                   COALESCE(sum(pg_column_size(scan) + pg_column_size(decision)), 0)::bigint AS bytes
+                            FROM analysis.option_decision scan
+                            JOIN analysis.decision decision ON decision.id = scan.decision_id
+                            WHERE decision.as_of < now() - interval '30 days'
+                              AND scan.evidence_state = 'local') options
+                CROSS JOIN (SELECT COALESCE(sum(pg_column_size(evidence)), 0)::bigint AS bytes
+                            FROM analysis.decision_evidence evidence
+                            JOIN analysis.decision decision ON decision.id = evidence.decision_id
+                            JOIN analysis.option_decision scan ON scan.decision_id = decision.id
+                            WHERE decision.as_of < now() - interval '30 days'
+                              AND scan.evidence_state = 'local') evidence
             """).fetchone()
         path = Path(os.environ.get("MARKET_STORAGE_DATABASE_PATH") or data_dir)
         if not path.is_dir():
@@ -173,7 +186,11 @@ class StorageArchiveService:
             "reserve_bytes": reserve,
             "archive_backlog": {"decisions": int(backlog["decisions"]),
                                 "option_scans": int(backlog["option_scans"])},
-            "protected_bytes": None, "protected_bytes_status": "reference_graph_pending",
+            "protected_bytes": int(backlog["decision_bytes"] + backlog["option_bytes"]
+                                   + backlog["option_evidence_bytes"]),
+            "protected_rows": {"ticker_decisions": int(backlog["decisions"]),
+                               "option_scans": int(backlog["option_scans"])},
+            "protected_bytes_status": "old_local_row_lower_bound_excludes_shared_dependencies",
         }
 
     def plan(self) -> dict[str, Any]:

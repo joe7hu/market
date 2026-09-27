@@ -1084,34 +1084,32 @@ class TickerDecisionRepository:
                 rows = connection.execute(
                     """
                     SELECT item.model_name,
-                           coalesce(payload.payload->>'ticker', payload.payload->>'symbol')
+                           coalesce(item.payload->>'ticker', item.payload->>'symbol')
                                AS ticker,
-                           payload.payload->>'availability_status' AS availability_status,
-                           payload.payload->'blockers' AS blockers,
-                           payload.payload->'trade_rank' AS trade_rank,
-                           payload.payload->>'primary_blocker' AS primary_blocker,
-                           payload.payload->>'trade_rank_unavailable_reason'
+                           item.payload->>'availability_status' AS availability_status,
+                           item.payload->'blockers' AS blockers,
+                           item.payload->'trade_rank' AS trade_rank,
+                           item.payload->>'primary_blocker' AS primary_blocker,
+                           item.payload->>'trade_rank_unavailable_reason'
                                AS trade_rank_unavailable_reason,
-                           payload.payload->>'eligibility' AS eligibility,
-                           payload.payload->>'ranking_version' AS ranking_version,
-                           payload.payload->>'decision_revision' AS decision_revision,
-                           payload.payload->>'opportunity_episode_id' AS opportunity_episode_id,
-                           payload.payload->>'policy_version' AS policy_version,
-                           payload.payload->>'selected_expression_kind' AS selected_expression_kind,
-                           payload.payload->>'selected_expression_identity' AS selected_expression_identity,
-                           payload.payload->>'rank_id' AS rank_id,
-                           payload.payload->>'portfolio_impact_id' AS portfolio_impact_id,
-                           payload.payload->>'market_state_publication_id' AS market_state_publication_id,
-                           payload.payload->'evaluated_universe_complete' AS evaluated_universe_complete,
-                           payload.payload->>'trade_utility' AS trade_utility,
-                           payload.payload->>'trade_plan_id' AS trade_plan_id,
+                           item.payload->>'eligibility' AS eligibility,
+                           item.payload->>'ranking_version' AS ranking_version,
+                           item.payload->>'decision_revision' AS decision_revision,
+                           item.payload->>'opportunity_episode_id' AS opportunity_episode_id,
+                           item.payload->>'policy_version' AS policy_version,
+                           item.payload->>'selected_expression_kind' AS selected_expression_kind,
+                           item.payload->>'selected_expression_identity' AS selected_expression_identity,
+                           item.payload->>'rank_id' AS rank_id,
+                           item.payload->>'portfolio_impact_id' AS portfolio_impact_id,
+                           item.payload->>'market_state_publication_id' AS market_state_publication_id,
+                           item.payload->'evaluated_universe_complete' AS evaluated_universe_complete,
+                           item.payload->>'trade_utility' AS trade_utility,
+                           item.payload->>'trade_plan_id' AS trade_plan_id,
                            coalesce(bundle_item.canonical_publication_id::text,
-                                    payload.payload->>'publication_id', publication.id::text)
+                                    item.payload->>'publication_id', publication.id::text)
                                AS publication_id,
                            publication.published_at
-                    FROM app.current_publication_item item
-                    JOIN app.publication_payload payload
-                      ON payload.content_hash = item.content_hash
+                    FROM app.current_publication_item_read item
                     JOIN app.publication publication
                       ON publication.id = item.publication_id
                     LEFT JOIN app.publication_bundle_item bundle_item
@@ -1151,14 +1149,12 @@ class TickerDecisionRepository:
                     ), source_rows AS MATERIALIZED (
                         SELECT item.model_name, item.rank,
                                coalesce(item.canonical_publication_id::text,
-                                        payload.payload->>'publication_id', chosen.id::text)
+                                        item.payload->>'publication_id', chosen.id::text)
                                    AS publication_id, chosen.published_at,
-                               payload.payload
+                               item.payload
                         FROM chosen_publication chosen
-                        JOIN app.publication_bundle_item item
+                        JOIN app.publication_bundle_item_read item
                           ON item.bundle_id = chosen.bundle_id
-                        JOIN app.publication_payload payload
-                          ON payload.content_hash = item.content_hash
                         WHERE chosen.bundle_id IS NOT NULL
                           AND item.model_name = ANY(%s)
                         UNION ALL

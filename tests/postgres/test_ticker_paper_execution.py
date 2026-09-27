@@ -680,10 +680,9 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(
                     INSERT INTO app.publication_item
                         (publication_id, model_name, stable_key, rank, instrument_id, payload)
                     SELECT publication.id, item.model_name, item.stable_key, item.rank,
-                           item.instrument_id, payload.payload
+                           item.instrument_id, item.payload
                     FROM app.publication publication
-                    JOIN app.publication_bundle_item item ON item.bundle_id = publication.bundle_id
-                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    JOIN app.publication_bundle_item_read item ON item.bundle_id = publication.bundle_id
                     WHERE publication.id = %s::uuid
                 """, [decision.trade_plan.publication_id])
                 connection.execute("""

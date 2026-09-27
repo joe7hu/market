@@ -466,6 +466,96 @@ def test_plan_includes_toast_and_partition_children_without_scanning_json(storag
     assert plan["decision_manifest_chunk_limit_bytes"] == MAX_CHUNK_BYTES
 
 
+def test_ranking_publication_references_immutable_decision_payload_once(storage):
+    analysis = AnalysisRepository(storage.runtime)
+    cutoff = datetime.now(UTC)
+    run_id = analysis.start_run("ticker-opportunity-ranking", input_cutoff=cutoff,
+                                code_version="canonical-test", inputs={"version": 1})
+    analysis.finish_run(run_id, "succeeded")
+    rank = {"ticker": "CANON", "rank_id": "rank-canon", "trade_rank": 1,
+            "eligibility": "ACTIONABLE", "exact": 0.12345678901234568}
+    publication_id = analysis.publish(run_id, "ticker-opportunity-ranking",
+                                      {"opportunity_rank": [rank]})
+    with storage.runtime.read() as connection:
+        item = connection.execute("""
+            SELECT item.content_hash, item.decision_payload_hash, evidence.payload
+            FROM app.publication publication
+            JOIN app.publication_bundle_item item ON item.bundle_id = publication.bundle_id
+            JOIN analysis.decision_input_payload evidence
+              ON evidence.content_hash = item.decision_payload_hash
+            WHERE publication.id = %s
+        """, [publication_id]).fetchone()
+        assert item["content_hash"] is None
+        assert item["decision_payload_hash"]
+        assert item["payload"] == rank
+        assert connection.execute(
+            "SELECT count(*) AS n FROM app.publication_payload"
+        ).fetchone()["n"] == 0
+    assert analysis.publication_rows("ticker-opportunity-ranking", "opportunity_rank")[0] == rank
+    current_id, models = analysis.current_ranking_rows()
+    assert current_id == str(publication_id)
+    assert models["opportunity_rank"][0]["rank_id"] == rank["rank_id"]
+
+
+def test_superseded_ranking_archive_includes_referenced_evidence(storage):
+    analysis = AnalysisRepository(storage.runtime)
+    cutoff = datetime.now(UTC)
+    ids = []
+    for version in (1, 2):
+        run_id = analysis.start_run("ticker-opportunity-ranking", input_cutoff=cutoff,
+                                    code_version=f"canonical-v{version}", inputs={"version": version})
+        analysis.finish_run(run_id, "succeeded")
+        ids.append(analysis.publish(run_id, "ticker-opportunity-ranking", {
+            "opportunity_rank": [{"ticker": "CANON", "rank_id": f"rank-{version}"}],
+        }))
+    with storage.runtime.transaction() as connection:
+        old = cutoff - timedelta(days=100)
+        connection.execute("UPDATE app.publication SET created_at = %s, published_at = %s WHERE id = %s",
+                           [old, old, ids[0]])
+        digest = connection.execute("""
+            SELECT item.decision_payload_hash FROM app.publication publication
+            JOIN app.publication_bundle_item item ON item.bundle_id = publication.bundle_id
+            WHERE publication.id = %s
+        """, [ids[0]]).fetchone()["decision_payload_hash"]
+    result = RetentionRepository(storage.runtime, archive_root=storage.archive_root).prune_publications(now=cutoff)
+    assert result["publications"] == 1
+    manifests = [json.loads(gzip.decompress(path.read_bytes()))
+                 for path in storage.archive_root.rglob("*.json.gz")]
+    rows = [row for manifest in manifests for row in manifest if isinstance(manifest, list)]
+    assert any(row["relation"] == "analysis.decision_input_payload"
+               and json.loads(row["row_json"])["content_hash"] == digest for row in rows)
+    with storage.runtime.read() as connection:
+        assert connection.execute(
+            "SELECT count(*) AS n FROM analysis.decision_input_payload WHERE content_hash = %s", [digest]
+        ).fetchone()["n"] == 0
+    assert analysis.publication_rows("ticker-opportunity-ranking", "opportunity_rank")[0]["rank_id"] == "rank-2"
+
+
+def test_superseded_outcome_publication_archives_without_affecting_current(storage):
+    analysis = AnalysisRepository(storage.runtime)
+    cutoff = datetime.now(UTC)
+    ids = []
+    for version in (1, 2):
+        run_id = analysis.start_run("ticker_outcome_attribution", input_cutoff=cutoff,
+                                    code_version=f"outcome-v{version}", inputs={"version": version})
+        analysis.finish_run(run_id, "succeeded")
+        ids.append(analysis.publish(run_id, "ticker-outcome-attribution", {
+            "outcome_attribution": [{"stable_unit_key": "plan:TACTICAL:1", "version": version}],
+        }))
+    with storage.runtime.transaction() as connection:
+        old = cutoff - timedelta(days=100)
+        connection.execute("UPDATE app.publication SET created_at = %s, published_at = %s WHERE id = %s",
+                           [old, old, ids[0]])
+    result = RetentionRepository(storage.runtime, archive_root=storage.archive_root).prune_publications(now=cutoff)
+    assert result["publications"] == 1
+    assert analysis.publication_rows("ticker-outcome-attribution", "outcome_attribution")[0]["version"] == 2
+    manifests = [json.loads(gzip.decompress(path.read_bytes()))
+                 for path in storage.archive_root.rglob("*.json.gz")]
+    rows = [row for manifest in manifests for row in manifest if isinstance(manifest, list)]
+    assert any(row["relation"] == "app.publication_payload"
+               and json.loads(row["row_json"])["payload"]["version"] == 1 for row in rows)
+
+
 def test_option_plan_does_not_write_and_scratch_uses_configured_dsn(storage, monkeypatch, tmp_path):
     archive_call = Mock(side_effect=AssertionError("dry run must not archive"))
     monkeypatch.setattr(storage, "_archive_option_partition", archive_call)

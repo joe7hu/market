@@ -24,10 +24,11 @@ CHECKPOINT = "option-scan-evidence-v1"
 RELATIONS = (
     "ingest.source", "ingest.run", "ingest.payload", "catalog.instrument",
     "analysis.hypothesis", "analysis.experiment_family", "analysis.strategy_revision",
+    "analysis.agent_experiment", "analysis.agent_run", "analysis.agent_task",
     "analysis.run", "raw.option_snapshot", "raw.option_capture_generation", "catalog.option_contract",
     "raw.option_quote", "analysis.option_relative_value",
     "analysis.option_relative_value_verification", "analysis.option_feature",
-    "analysis.decision", "analysis.option_decision", "analysis.decision_evidence",
+    "app.thesis_automation_run", "app.thesis", "analysis.decision", "analysis.option_decision", "analysis.decision_evidence",
 )
 _SUMMARY_KEYS = (
     "probability_semantics", "scenario_count", "conservative_expected_value",
@@ -71,13 +72,13 @@ class OptionEvidenceArchive:
                 rows = connection.execute(f"""
                     SELECT scan.decision_id, decision.as_of, decision.run_id,
                            scan.snapshot_id, scan.contract_id, scan.quote_observed_at,
-                           scan.relative_value_id, scan.synthetic_legs
+                           scan.relative_value_id, scan.synthetic_legs,
+                           scan.primary_decision_id
                     FROM analysis.decision decision
                     JOIN analysis.option_decision scan ON scan.decision_id = decision.id
                     JOIN analysis.run run ON run.id = decision.run_id
                     WHERE decision.kind = 'option' AND decision.as_of < %s
                       AND scan.evidence_state = 'local' AND run.status = 'succeeded'
-                      AND scan.thesis_id IS NULL AND scan.primary_decision_id IS NULL
                       AND NOT EXISTS (SELECT 1 FROM analysis.option_decision dependent
                                       WHERE dependent.primary_decision_id = decision.id
                                         AND dependent.evidence_state = 'local')
@@ -164,8 +165,13 @@ class OptionEvidenceArchive:
                     return {"phase": CHECKPOINT, "status": "batch_complete",
                             "archived": 0, "skipped": skipped, "dry_run": False}
                 selected = [row["decision_id"] for row in archived_rows]
+                closure = self._scan_closure(connection, archived_rows)
                 receipt = {"contract": "option-scan-evidence.v1",
                            "decision_ids": [str(value) for value in selected],
+                           "primary_decision_ids": {
+                               str(row["decision_id"]): str(row["primary_decision_id"])
+                               for row in closure if row["primary_decision_id"] is not None
+                           },
                            "dependencies": packs}
                 artifact = self.service._write_json_gzip(
                     "derived", receipt, source_relation="analysis.option_decision",
@@ -239,7 +245,39 @@ class OptionEvidenceArchive:
                 packs.setdefault(relation, set()).update(ids)
         return accepted, {relation: sorted(ids) for relation, ids in packs.items()}, skipped
 
+    @staticmethod
+    def _scan_closure(connection: Any, rows: list[Any]) -> list[Any]:
+        closure = {row["decision_id"]: row for row in rows}
+        while missing := {row["primary_decision_id"] for row in closure.values()
+                          if row["primary_decision_id"] is not None
+                          and row["primary_decision_id"] not in closure}:
+            parents = connection.execute("""
+                SELECT scan.decision_id, decision.as_of, decision.run_id,
+                       scan.snapshot_id, scan.contract_id, scan.quote_observed_at,
+                       scan.relative_value_id, scan.synthetic_legs,
+                       scan.primary_decision_id, scan.evidence_state
+                FROM analysis.option_decision scan
+                JOIN analysis.decision decision ON decision.id = scan.decision_id
+                WHERE scan.decision_id = ANY(%s)
+                FOR SHARE OF scan, decision
+            """, [sorted(missing)]).fetchall()
+            if len(parents) != len(missing) or any(
+                row["evidence_state"] != "local" for row in parents
+            ):
+                raise ValueError("option archive primary dependency incomplete; source retained")
+            closure.update((row["decision_id"], row) for row in parents)
+        for row in rows:
+            seen: set[Any] = set()
+            current = row["decision_id"]
+            while current is not None:
+                if current in seen:
+                    raise ValueError("option archive primary dependency cycle; source retained")
+                seen.add(current)
+                current = closure[current]["primary_decision_id"]
+        return list(closure.values())
+
     def _write_dependencies(self, connection: Any, rows: list[Any]) -> dict[str, list[int]]:
+        rows = self._scan_closure(connection, rows)
         selected = [row["decision_id"] for row in rows]
         run_ids = sorted({row["run_id"] for row in rows})
         snapshot_ids = sorted({row["snapshot_id"] for row in rows})
@@ -302,11 +340,77 @@ class OptionEvidenceArchive:
             "FROM analysis.option_decision WHERE decision_id = ANY(%s)", [selected],
         ).fetchall()
         if len(scan_refs) != len(selected) or any(
-            row["thesis_id"] is not None or
-            (row["primary_decision_id"] is not None and row["primary_decision_id"] not in selected)
+            row["primary_decision_id"] is not None and row["primary_decision_id"] not in selected
             for row in scan_refs
         ):
-            raise ValueError("option archive linked thesis or primary decision requires local evidence; source retained")
+            raise ValueError("option archive linked primary decision requires local evidence; source retained")
+        thesis_roots = sorted({row["thesis_id"] for row in scan_refs if row["thesis_id"] is not None})
+        theses = connection.execute("""
+            WITH RECURSIVE lineage(id, parent_id) AS (
+              SELECT id, superseded_revision_id FROM app.thesis WHERE id = ANY(%s)
+              UNION
+              SELECT parent.id, parent.superseded_revision_id FROM app.thesis parent
+              JOIN lineage child ON parent.id = child.parent_id
+            )
+            SELECT thesis.id, thesis.instrument_id, thesis.source_agent_task_id,
+                   thesis.automation_run_id FROM app.thesis thesis
+            JOIN lineage ON lineage.id = thesis.id FOR SHARE OF thesis
+        """, [thesis_roots]).fetchall()
+        thesis_ids = sorted(row["id"] for row in theses)
+        if not set(thesis_roots) <= set(thesis_ids):
+            raise ValueError("option archive thesis dependency incomplete; source retained")
+        task_roots = sorted({row["source_agent_task_id"] for row in theses
+                             if row["source_agent_task_id"] is not None})
+        tasks = connection.execute("""
+            WITH RECURSIVE lineage(id, parent_id) AS (
+              SELECT id, paired_task_id FROM analysis.agent_task WHERE id = ANY(%s)
+              UNION
+              SELECT parent.id, parent.paired_task_id FROM analysis.agent_task parent
+              JOIN lineage child ON parent.id = child.parent_id
+            )
+            SELECT task.id, task.decision_id, task.agent_run_id, task.experiment_id,
+                   task.status FROM analysis.agent_task task
+            JOIN lineage ON lineage.id = task.id FOR SHARE OF task
+        """, [task_roots]).fetchall()
+        task_ids = sorted(row["id"] for row in tasks)
+        if not set(task_roots) <= set(task_ids) or any(
+            row["status"] not in {"succeeded", "completed", "failed", "cancelled"}
+            or (row["decision_id"] is not None and row["decision_id"] not in selected)
+            for row in tasks
+        ):
+            raise ValueError("option archive thesis agent task dependency incomplete; source retained")
+        agent_run_ids = sorted({row["agent_run_id"] for row in tasks if row["agent_run_id"] is not None})
+        agent_runs = connection.execute(
+            "SELECT id, finished_at, experiment_id FROM analysis.agent_run "
+            "WHERE id = ANY(%s) FOR SHARE", [agent_run_ids],
+        ).fetchall()
+        if len(agent_runs) != len(agent_run_ids) or any(
+            row["finished_at"] is None for row in agent_runs
+        ):
+            raise ValueError("option archive thesis agent run dependency incomplete; source retained")
+        agent_experiment_ids = sorted(
+            {row["experiment_id"] for row in (*tasks, *agent_runs)
+             if row["experiment_id"] is not None}
+        )
+        agent_experiments = connection.execute(
+            "SELECT id, status FROM analysis.agent_experiment WHERE id = ANY(%s) FOR SHARE",
+            [agent_experiment_ids],
+        ).fetchall()
+        if len(agent_experiments) != len(agent_experiment_ids) or any(
+            row["status"] not in {"completed", "archived"} for row in agent_experiments
+        ):
+            raise ValueError("option archive active agent experiment dependency incomplete; source retained")
+        automation_ids = sorted({row["automation_run_id"] for row in theses
+                                 if row["automation_run_id"] is not None})
+        automations = connection.execute(
+            "SELECT id, instrument_id, status FROM app.thesis_automation_run "
+            "WHERE id = ANY(%s) FOR SHARE", [automation_ids],
+        ).fetchall()
+        if len(automations) != len(automation_ids) or any(
+            row["status"] not in {"succeeded", "failed", "timeout", "skipped"}
+            for row in automations
+        ):
+            raise ValueError("option archive thesis automation dependency incomplete; source retained")
         generation_ids = sorted({value for value in (
             *(row["latest_complete_generation_id"] for row in snapshots),
             *(row["capture_generation_id"] for row in quotes),
@@ -339,7 +443,10 @@ class OptionEvidenceArchive:
             "FROM analysis.decision WHERE id = ANY(%s)", [selected],
         ).fetchall()
         instrument_ids = sorted({row["underlying_instrument_id"] for row in contracts}
-                                | {row["instrument_id"] for row in decisions})
+                                | {row["instrument_id"] for row in decisions}
+                                | {row["instrument_id"] for row in theses}
+                                | {row["instrument_id"] for row in automations
+                                   if row["instrument_id"] is not None})
         runs = connection.execute(
             "SELECT id, strategy_revision_id FROM analysis.run WHERE id = ANY(%s)", [run_ids],
         ).fetchall()
@@ -380,6 +487,9 @@ class OptionEvidenceArchive:
             "analysis.hypothesis": ("id = ANY(%s)", [hypothesis_ids]),
             "analysis.experiment_family": ("id = ANY(%s)", [family_ids]),
             "analysis.strategy_revision": ("id = ANY(%s)", [revision_ids]),
+            "analysis.agent_experiment": ("id = ANY(%s)", [agent_experiment_ids]),
+            "analysis.agent_run": ("id = ANY(%s)", [agent_run_ids]),
+            "analysis.agent_task": ("id = ANY(%s)", [task_ids]),
             "analysis.run": ("id = ANY(%s)", [run_ids]),
             "raw.option_snapshot": ("id = ANY(%s)", [snapshot_ids]),
             "raw.option_capture_generation": ("id = ANY(%s)", [generation_ids]),
@@ -397,6 +507,8 @@ class OptionEvidenceArchive:
                                         [[key[0] for key in ordered_features],
                                          [key[1] for key in ordered_features],
                                          [key[2] for key in ordered_features]]),
+            "app.thesis_automation_run": ("id = ANY(%s)", [automation_ids]),
+            "app.thesis": ("id = ANY(%s)", [thesis_ids]),
             "analysis.decision": ("id = ANY(%s)", [selected]),
             "analysis.option_decision": ("decision_id = ANY(%s)", [selected]),
             "analysis.decision_evidence": ("decision_id = ANY(%s)", [selected]),
@@ -407,11 +519,16 @@ class OptionEvidenceArchive:
             "analysis.hypothesis": len(hypothesis_ids),
             "analysis.experiment_family": len(family_ids),
             "analysis.strategy_revision": len(revision_ids),
+            "analysis.agent_experiment": len(agent_experiment_ids),
+            "analysis.agent_run": len(agent_run_ids),
+            "analysis.agent_task": len(task_ids),
             "analysis.run": len(run_ids), "raw.option_snapshot": len(snapshot_ids),
             "raw.option_capture_generation": len(generation_ids),
             "catalog.option_contract": len(contract_ids),
             "raw.option_quote": len(quote_keys),
             "analysis.option_relative_value": len(relative_ids),
+            "app.thesis_automation_run": len(automation_ids),
+            "app.thesis": len(thesis_ids),
             "analysis.decision": len(rows), "analysis.option_decision": len(rows),
         }
         packs: dict[str, list[int]] = {}
@@ -453,6 +570,13 @@ class OptionEvidenceArchive:
         if receipt.get("contract") != "option-scan-evidence.v1" or selected not in receipt.get("decision_ids", []):
             raise ValueError("selected scan is not covered by the archive receipt")
         included = set(receipt["decision_ids"]) if verify_all else {selected}
+        links = receipt.get("primary_decision_ids") or {}
+        pending = list(included)
+        while pending:
+            parent = links.get(pending.pop())
+            if parent and parent not in included:
+                included.add(parent)
+                pending.append(parent)
         dependencies = receipt.get("dependencies") or {}
         if set(dependencies) != set(RELATIONS):
             # Evidence and relative-value rows are optional; core typed owners are not.

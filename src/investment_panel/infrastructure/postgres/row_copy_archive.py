@@ -105,9 +105,10 @@ def write_large_row(service: StorageArchiveService, connection: Any, kind: str,
             raise ValueError(f"large row read-back failed: {reason}; source retained")
         _typed_restore(connection, candidate, relation, raw)
         metadata["typed_restore_verified"] = True
-        if relation == "analysis.run":
+        if relation in {"analysis.run", "analysis.decision_input_payload"}:
+            key = "id" if relation == "analysis.run" else "content_hash"
             metadata["source_row_ids"] = [connection.execute(
-                "SELECT (%s::jsonb)->>'id' AS id", [raw],
+                "SELECT (%s::jsonb)->>%s AS id", [raw, key],
             ).fetchone()["id"]]
         if candidate == temporary:
             os.replace(temporary, target)
@@ -117,6 +118,8 @@ def write_large_row(service: StorageArchiveService, connection: Any, kind: str,
             artifact_hash=artifact_hash, row_count=1, range_start=None,
             range_end=None, metadata=metadata, archive_format=FORMAT,
         )
+        if "source_row_ids" in metadata:
+            service._update_manifest_metadata(manifest_id, {"source_row_ids": metadata["source_row_ids"]})
         if service.verify(manifest_id=manifest_id)["verified"] != 1:
             raise ValueError("large row manifest verification failed; source retained")
         return manifest_id
