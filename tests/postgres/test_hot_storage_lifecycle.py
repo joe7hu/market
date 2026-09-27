@@ -1551,7 +1551,7 @@ def test_option_archive_drains_bounded_batches_with_one_backup_check(storage, mo
                              max_batches=2, execute=True, backup_token=token)
     assert result["archived"] == 2 and result["batches"] == 2
     assert len(result["manifest_ids"]) == 2 and result["skipped"] == []
-    assert len(checks) == 2
+    assert len(checks) == 1
     with storage.runtime.read() as connection:
         assert connection.execute("""SELECT count(*) AS n FROM analysis.option_decision
             WHERE decision_id = ANY(%s) AND evidence_state = 'archived'""",

@@ -80,7 +80,9 @@ def test_ranking_publication_reference_backfill_preserves_exact_legacy_read(stor
     with storage.runtime.read() as connection:
         before = connection.execute("SELECT input_manifest::text FROM analysis.ticker_decision_read WHERE id = %s",
                                     [decision_id]).fetchone()
-    assert backfill_ranking_publication_refs(storage.runtime, batch_size=1, execute=True)["checked"] == 1
+    result = backfill_ranking_publication_refs(storage.runtime, batch_size=1, execute=True)
+    assert result["checked"] == 1
+    assert result["input_bytes_processed"] == len(before["input_manifest"].encode("utf-8"))
     with storage.runtime.read() as connection:
         after = connection.execute("SELECT input_manifest::text FROM analysis.ticker_decision_read WHERE id = %s",
                                    [decision_id]).fetchone()
@@ -524,7 +526,15 @@ def test_maintenance_requires_real_data_volume_headroom(tmp_path, monkeypatch):
 def test_backup_token_rechecks_actual_file_bytes(storage):
     token = _backup(storage)
     assert storage._require_verified_backup(token)["status"] == "verified"
-    (storage.archive_root.parent.parent / "postgres-backups" / "fixture.dump").write_bytes(b"corrupt")
+    backup_root = storage.archive_root.parent.parent / "postgres-backups"
+    receipt_path = backup_root / "fixture.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt_path.write_text(json.dumps({**receipt, "status": "revoked"}))
+    with pytest.raises(ValueError, match="verified NAS"):
+        storage._require_verified_backup(token)
+    receipt_path.write_text(json.dumps(receipt))
+    assert storage._require_verified_backup(token)["status"] == "verified"
+    (backup_root / "fixture.dump").write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="verified NAS"):
         storage._require_verified_backup(token)
 

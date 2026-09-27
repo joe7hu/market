@@ -143,7 +143,9 @@ class OptionEvidenceArchive:
                             "archived": 0, "dry_run": not execute}
                 if not execute:
                     return {"phase": CHECKPOINT, "status": "eligible",
-                            "eligible": len(rows), "dry_run": True}
+                            "eligible": len(rows),
+                            "decision_ids": [str(row["decision_id"]) for row in rows],
+                            "dry_run": True}
                 selected = [row["decision_id"] for row in rows]
                 locked = connection.execute("""
                     SELECT scan.decision_id, decision.as_of, decision.run_id,

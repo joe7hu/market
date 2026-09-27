@@ -86,6 +86,7 @@ class StorageArchiveService:
     def __init__(self, runtime: DatabaseRuntime, archive_root: Path) -> None:
         self.runtime = runtime
         self.archive_root = archive_root
+        self._verified_backup_cache: tuple[str, Path, Path, tuple[int, int, int, int, int], dict[str, Any]] | None = None
 
     def account(self, *, record: bool = False) -> dict[str, Any]:
         """Measure the PostgreSQL filesystem and a conservative 30-day trend."""
@@ -902,6 +903,19 @@ class StorageArchiveService:
     def _require_verified_backup(self, token: str | None) -> dict[str, Any]:
         if not token or not _BACKUP_SHA_RE.fullmatch(token.lower()):
             raise ValueError("a verified PostgreSQL backup SHA-256 token is required")
+        if self._verified_backup_cache is not None:
+            cached_token, receipt_path, cached_path, cached_stat, cached_manifest = self._verified_backup_cache
+            try:
+                receipt = json.loads(receipt_path.read_text())
+                stat = cached_path.stat()
+            except (OSError, json.JSONDecodeError):
+                pass
+            else:
+                if (cached_token == token.lower() and receipt == cached_manifest
+                    and receipt.get("status") == "verified"
+                    and cached_stat == (stat.st_dev, stat.st_ino, stat.st_size,
+                                        stat.st_mtime_ns, stat.st_ctime_ns)):
+                    return cached_manifest
         backup_root = self.archive_root.parent.parent / "postgres-backups"
         for manifest_path in sorted(backup_root.glob("*.json"), reverse=True):
             try:
@@ -913,8 +927,16 @@ class StorageArchiveService:
                 and str(manifest.get("sha256", "")).lower() == token.lower()
                 and Path(str(manifest.get("dump_path", ""))).is_file()
             ):
-                if _sha256_file(Path(str(manifest["dump_path"]))) == token.lower():
-                    return manifest
+                path = Path(str(manifest["dump_path"]))
+                before = path.stat()
+                if _sha256_file(path) == token.lower():
+                    stat = path.stat()
+                    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) == (
+                        stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+                    ):
+                        self._verified_backup_cache = (token.lower(), manifest_path, path,
+                            (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns), manifest)
+                        return manifest
         raise ValueError("backup token does not identify a verified NAS PostgreSQL backup")
 
     def _assert_no_conflicting_activity(self) -> None:

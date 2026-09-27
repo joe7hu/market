@@ -1137,15 +1137,15 @@ def today_authority_pages(
                    analysis.expand_decision_capital(
                        decision.capital_action,
                        analysis.expand_decision_resolution(
-                           decision.resolution, decision.evidence_refs,
-                           decision.input_manifest - 'inputs',
+                           decision.resolution, today.refs,
+                           today.manifest,
                            decision.opportunity_episode),
-                       decision.evidence_refs) AS capital_action,
+                       today.refs) AS capital_action,
                    analysis.expand_decision_resolution(
-                       decision.resolution, decision.evidence_refs,
-                       decision.input_manifest - 'inputs',
+                       decision.resolution, today.refs,
+                       today.manifest,
                        decision.opportunity_episode) AS resolution,
-                   CASE WHEN decision.evidence_refs->>'selected_episode' = 'true'
+                   CASE WHEN today.refs->>'selected_episode' = 'true'
                         THEN decision.opportunity_episode->'selected_expression'
                         ELSE decision.selected_expression END AS selected_expression,
                    jsonb_set(
@@ -1153,13 +1153,14 @@ def today_authority_pages(
                            CASE WHEN EXISTS (
                                SELECT 1
                                FROM jsonb_each_text(decision.input_payload_refs) ref
-                               LEFT JOIN analysis.decision_input_payload payload
-                                 ON payload.content_hash = ref.value
-                               WHERE payload.content_hash IS NULL
+                               WHERE (SELECT payload.content_hash
+                                      FROM analysis.decision_input_payload payload
+                                      WHERE payload.content_hash = ref.value
+                                      LIMIT 1) IS NULL
                            ) THEN analysis.expand_decision_inputs(
                                decision.input_manifest, decision.input_payload_refs)
-                           ELSE decision.input_manifest - 'inputs' END,
-                           decision.evidence_refs, decision.opportunity_episode),
+                           ELSE today.manifest END,
+                           today.refs, decision.opportunity_episode),
                        '{{inputs}}', jsonb_build_object('theses',
                            CASE WHEN decision.input_payload_refs ? 'theses'
                                 THEN analysis.decision_payload(
@@ -1168,9 +1169,28 @@ def today_authority_pages(
                        true) AS input_manifest
             FROM candidate_keys candidate
             JOIN analysis.ticker_decision decision ON decision.id = candidate.id
+            -- Today reads rank, plan, and thesis; skip unrelated evidence payloads.
+            CROSS JOIN LATERAL (SELECT
+                decision.input_manifest - ARRAY['inputs', 'instrument_state_snapshot',
+                    'alpha_signals', 'reference_signal'] AS manifest,
+                decision.evidence_refs || jsonb_build_object('manifest',
+                    COALESCE(decision.evidence_refs->'manifest', '{{}}'::jsonb)
+                    - ARRAY['instrument_state_snapshot', 'alpha_signals',
+                        'reference_signal']) AS refs,
+                (SELECT ref.value FROM jsonb_each_text(
+                    decision.evidence_refs->'manifest') ref
+                 WHERE ref.key = ANY(ARRAY['instrument_state_snapshot',
+                     'alpha_signals', 'reference_signal'])
+                   AND (SELECT payload.content_hash
+                        FROM analysis.decision_input_payload payload
+                        WHERE payload.content_hash = ref.value LIMIT 1) IS NULL
+                 LIMIT 1) AS missing_ref
+            ) today
             WHERE candidate.current_row = 1
               AND candidate.authority_count = 1
               AND candidate.opportunity_authority_count = 1
+              AND (today.missing_ref IS NULL
+                   OR analysis.decision_payload(today.missing_ref) IS NOT NULL)
         ), current_candidates AS MATERIALIZED (
             SELECT decision.id AS decision_id,
                    decision.id::text AS ticker_decision_id,

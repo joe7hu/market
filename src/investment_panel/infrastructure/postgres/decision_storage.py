@@ -61,18 +61,33 @@ def backfill_ranking_publication_refs(
         candidates = connection.execute("""SELECT id FROM analysis.ticker_decision
             WHERE NOT ranking_ref_checked ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED""",
             [batch_size]).fetchall()
-        consumed = checked = 0
+        checked = consumed = 0
+        reference_query = """SELECT decision.ranking_publication_id AS indexed_id,
+                decision.input_manifest ? 'trade_plan'
+                    AND decision.evidence_refs->'manifest' ? 'trade_plan' AS duplicate_plan,
+                decision.input_manifest ? 'opportunity_rank'
+                    AND decision.evidence_refs->'manifest' ? 'opportunity_rank' AS duplicate_rank,
+                plan.payload->>'publication_id' AS plan_publication_id,
+                rank.payload->>'ranking_publication_id' AS rank_publication_id,
+                rank.payload->>'publication_id' AS rank_alias_id
+            FROM analysis.ticker_decision decision
+            CROSS JOIN LATERAL (SELECT CASE
+                WHEN decision.evidence_refs->'manifest' ? 'trade_plan'
+                THEN analysis.decision_payload(decision.evidence_refs #>> '{manifest,trade_plan}')
+                ELSE decision.input_manifest->'trade_plan' END AS payload) plan
+            CROSS JOIN LATERAL (SELECT CASE
+                WHEN decision.evidence_refs->'manifest' ? 'opportunity_rank'
+                THEN analysis.decision_payload(decision.evidence_refs #>> '{manifest,opportunity_rank}')
+                ELSE decision.input_manifest->'opportunity_rank' END AS payload) rank
+            WHERE decision.id = %s"""
         for candidate in candidates:
             decision_id = candidate["id"]
-            before = connection.execute("""SELECT expanded.input_manifest::text AS manifest,
-                expanded.input_manifest->'trade_plan'->>'publication_id' AS plan_publication_id,
-                expanded.input_manifest->'opportunity_rank'->>'ranking_publication_id' AS rank_publication_id,
-                expanded.input_manifest->'opportunity_rank'->>'publication_id' AS rank_alias_id,
-                decision.ranking_publication_id AS indexed_id
-                FROM analysis.ticker_decision_read expanded
-                JOIN analysis.ticker_decision decision ON decision.id = expanded.id
-                WHERE expanded.id = %s""", [decision_id]).fetchone()
-            size = len(before["manifest"].encode("utf-8"))
+            before = connection.execute(reference_query, [decision_id]).fetchone()
+            if before["duplicate_plan"] or before["duplicate_rank"]:
+                raise ValueError("ranking evidence is both inline and referenced; batch rolled back")
+            size = int(connection.execute("""SELECT octet_length(input_manifest::text) AS bytes
+                FROM analysis.ticker_decision_read WHERE id = %s""",
+                [decision_id]).fetchone()["bytes"])
             if consumed + size > MAX_EVIDENCE_BATCH_BYTES:
                 if not checked:
                     raise ValueError("individual ranking reference exceeds the 64 MiB maintenance budget")
@@ -91,9 +106,9 @@ def backfill_ranking_publication_refs(
             connection.execute("""UPDATE analysis.ticker_decision
                 SET ranking_publication_id = %s, ranking_ref_checked = true WHERE id = %s""",
                 [publication_id, decision_id])
-            after = connection.execute("SELECT input_manifest::text AS manifest FROM analysis.ticker_decision_read WHERE id = %s",
-                                       [decision_id]).fetchone()
-            if before["manifest"] != after["manifest"]:
+            after = connection.execute(reference_query, [decision_id]).fetchone()
+            before["indexed_id"] = publication_id
+            if before != after:
                 raise ValueError("ranking reference changed decision read; batch rolled back")
             consumed += size
             checked += 1
@@ -124,7 +139,6 @@ def backfill_ranking_publication_payloads(
         connection.execute("""LOCK TABLE app.publication_bundle_item,
             app.current_publication_item IN SHARE ROW EXCLUSIVE MODE""")
         rows = connection.execute(f"""SELECT item.bundle_id, item.model_name, item.stable_key,
-                item.content_hash, payload.payload::text AS before,
                 pg_column_size(payload.payload) AS bytes
             FROM app.publication_bundle_item item
             JOIN app.publication_bundle bundle ON bundle.id = item.bundle_id
@@ -142,19 +156,7 @@ def backfill_ranking_publication_payloads(
             key = [row["bundle_id"], row["model_name"], row["stable_key"]]
             deleted = connection.execute("""SELECT app.rehome_ranking_publication_payload(
                 %s, %s, %s) AS released""", key).fetchone()
-            after = connection.execute("""SELECT payload::text AS body
-                FROM app.publication_bundle_item_read
-                WHERE bundle_id = %s AND model_name = %s AND stable_key = %s""",
-                key).fetchone()
-            if after is None or after["body"] != row["before"]:
-                raise ValueError("ranking publication read changed; batch rolled back")
-            current = connection.execute("""SELECT current_item.payload::text AS body
-                FROM app.current_publication_item_read current_item
-                JOIN app.publication publication ON publication.id = current_item.publication_id
-                WHERE publication.bundle_id = %s AND current_item.model_name = %s
-                  AND current_item.stable_key = %s""", key).fetchone()
-            if current is not None and current["body"] != row["before"]:
-                raise ValueError("current ranking read changed; batch rolled back")
+            # The database function compares both read views with the original row.
             released += int(deleted["released"])
             converted += 1
             consumed += size

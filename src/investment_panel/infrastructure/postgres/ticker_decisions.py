@@ -1700,10 +1700,14 @@ class TickerDecisionRepository:
                 """
                 SELECT EXISTS (
                     SELECT 1
-                    FROM analysis.ticker_decision_read decision
+                    FROM analysis.ticker_decision decision
                     WHERE decision.status IN ('published', 'superseded')
                       AND decision.as_of <= %s
-                      AND jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
+                      AND (CASE WHEN decision.evidence_refs->'manifest' ? 'trade_plan'
+                                THEN jsonb_typeof(analysis.decision_payload(
+                                    decision.evidence_refs #>> '{manifest,trade_plan}'))
+                                ELSE jsonb_typeof(decision.input_manifest->'trade_plan')
+                           END) = 'object'
                       AND (
                           SELECT count(*)
                           FROM analysis.ticker_outcome outcome
@@ -1796,10 +1800,14 @@ class TickerDecisionRepository:
             legacy_count = connection.execute(
                 """
                 SELECT count(*) AS count
-                FROM analysis.ticker_decision_read decision
+                FROM analysis.ticker_decision decision
                 WHERE decision.status IN ('published', 'superseded')
                   AND decision.as_of <= %s
-                  AND jsonb_typeof(decision.input_manifest->'trade_plan') IS DISTINCT FROM 'object'
+                  AND (CASE WHEN decision.evidence_refs->'manifest' ? 'trade_plan'
+                            THEN jsonb_typeof(analysis.decision_payload(
+                                decision.evidence_refs #>> '{manifest,trade_plan}'))
+                            ELSE jsonb_typeof(decision.input_manifest->'trade_plan')
+                       END) IS DISTINCT FROM 'object'
                 """,
                 [reference],
             ).fetchone()["count"]
