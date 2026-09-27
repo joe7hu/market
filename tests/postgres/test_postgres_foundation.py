@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import closing
+from datetime import UTC, datetime
 import sys
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -12,6 +14,8 @@ from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION, d
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.authority import close_cached_runtimes, runtime_for_url
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.options_publication import OPTION_SUBSET_KEYS
 from investment_panel.application.read_models.loaders import load_panel_data
 from conftest import typed_config
 
@@ -239,6 +243,36 @@ def test_migration_round_trip_removes_only_market_schemas(postgres_dsn: str) -> 
     upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+
+
+def test_option_projection_downgrade_restores_exact_publication_rows(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    candidate = {key: None for keys in OPTION_SUBSET_KEYS.values() for key in keys}
+    candidate.update({"candidate_event_id": str(uuid4()), "contract_id": "42", "ticker": "RESTORE",
+                      "raw": {"exact": "same"}, "mid": 1.25})
+    expected = {model: {key: candidate[key] for key in keys}
+                for model, keys in OPTION_SUBSET_KEYS.items()}
+    try:
+        analysis = AnalysisRepository(runtime)
+        run = analysis.start_run("options-radar", input_cutoff=datetime.now(UTC),
+                                 code_version="downgrade-test", inputs={"id": candidate["candidate_event_id"]})
+        publication_id = analysis.publish(run, "options-radar", {
+            "candidate_event": [candidate],
+            **{model: [payload] for model, payload in expected.items()},
+        })
+    finally:
+        runtime.close()
+    downgrade_database(postgres_dsn, "20260926_0040")
+    with psycopg.connect(postgres_dsn) as connection:
+        rows = connection.execute("""SELECT model_name, payload FROM app.publication_content_item
+            WHERE publication_id = %s AND model_name IN ('option_snapshot', 'option_features')""",
+            [publication_id]).fetchall()
+        assert {model: payload for model, payload in rows} == expected
+        assert connection.execute("""SELECT count(*) FROM app.publication_bundle_item item
+            JOIN app.publication publication ON publication.bundle_id = item.bundle_id
+            WHERE publication.id = %s""", [publication_id]).fetchone()[0] == 3
 
 
 def test_baseline_contains_current_authority_columns_and_uniqueness(postgres_dsn: str) -> None:

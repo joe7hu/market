@@ -247,11 +247,13 @@ def test_ranking_publication_retention_waits_for_backfill_and_keeps_references(p
                 VALUES (%s, 'retention', 'test', now(), %s, 'test', 'test', '{}', '{}', '{}', '{}', '{}', %s)
                 RETURNING id""", [instrument_id, "a" * 64, ids[0]]).fetchone()["id"]
         retention = RetentionRepository(runtime)
-        assert retention.prune_publications(now=reference, candidate_ids=ids, dry_run=True)["publications"] == 0
+        # The old attribution generation is now cold-archive eligible even
+        # while ranking references await their exact backfill.
+        assert retention.prune_publications(now=reference, candidate_ids=ids, dry_run=True)["publications"] == 1
         with runtime.transaction() as connection:
             connection.execute("UPDATE analysis.ticker_decision SET ranking_ref_checked = true WHERE id = %s", [decision_id])
-        assert retention.prune_publications(now=reference, candidate_ids=ids, dry_run=True)["publications"] == 1
-        assert retention.prune_publications(now=reference, dry_run=True)["publications"] == 1
+        assert retention.prune_publications(now=reference, candidate_ids=ids, dry_run=True)["publications"] == 2
+        assert retention.prune_publications(now=reference, dry_run=True)["publications"] == 2
     finally:
         runtime.close()
 

@@ -17,7 +17,7 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.infrastructure.postgres.decision_inputs import compact_input_batch
-from investment_panel.infrastructure.postgres.decision_storage import store_context
+from investment_panel.infrastructure.postgres.decision_storage import backfill_ranking_publication_payloads, store_context
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.hot_retention import HotRetention
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
@@ -161,6 +161,95 @@ def test_representative_busy_day_replay_measures_unique_writes(storage):
     assert measured["unique_payload_bytes"] > 0
     print("BUSY_DAY_REPLAY=" + json.dumps({"evaluations": 300, "decision_writes": published_decisions,
         "unchanged_checks": unchanged, **dict(measured)}, default=int, sort_keys=True))
+
+
+def test_legacy_ranking_publication_payloads_move_once_with_exact_reads(storage):
+    raw = '{"score":0.12345678901234567890123456789,"why":"unchanged"}'
+    with storage.runtime.transaction() as connection:
+        run_id = connection.execute("""INSERT INTO analysis.run
+            (run_type, input_cutoff, code_version, input_hash, started_at, status)
+            VALUES ('rank-backfill', now(), 'test', %s, now(), 'succeeded') RETURNING id""",
+            ["a" * 64]).fetchone()["id"]
+        bundle_id = connection.execute("""INSERT INTO app.publication_bundle(scope, bundle_hash, item_count)
+            VALUES ('ticker-opportunity-ranking', %s, 1) RETURNING id""", ["b" * 64]).fetchone()["id"]
+        publication_id = connection.execute("""INSERT INTO app.publication
+            (scope, analysis_run_id, status, bundle_id)
+            VALUES ('ticker-opportunity-ranking', %s, 'published', %s) RETURNING id""",
+            [run_id, bundle_id]).fetchone()["id"]
+        connection.execute("INSERT INTO app.publication_payload(content_hash, payload) VALUES (%s, %s::jsonb)",
+                           ["c" * 64, raw])
+        connection.execute("""INSERT INTO app.publication_bundle_item
+            (bundle_id, model_name, stable_key, rank, content_hash)
+            VALUES (%s, 'opportunity_rank', 'ONE', 1, %s)""", [bundle_id, "c" * 64])
+        connection.execute("""INSERT INTO app.current_publication_item
+            (scope, publication_id, model_name, stable_key, rank, content_hash)
+            VALUES ('ticker-opportunity-ranking', %s, 'opportunity_rank', 'ONE', 1, %s)""",
+            [publication_id, "c" * 64])
+        before = connection.execute("""SELECT payload::text AS body FROM app.publication_bundle_item_read
+            WHERE bundle_id = %s""", [bundle_id]).fetchone()["body"]
+    assert backfill_ranking_publication_payloads(storage.runtime)["remaining"] == 1
+    result = backfill_ranking_publication_payloads(storage.runtime, batch_size=1, execute=True)
+    assert result["converted"] == 1
+    assert backfill_ranking_publication_payloads(storage.runtime, batch_size=1, execute=True)["converted"] == 0
+    with storage.runtime.read() as connection:
+        item = connection.execute("""SELECT content_hash, decision_payload_hash, payload::text AS body
+            FROM app.publication_bundle_item_read WHERE bundle_id = %s""", [bundle_id]).fetchone()
+        current = connection.execute("""SELECT content_hash, decision_payload_hash, payload::text AS body
+            FROM app.current_publication_item_read WHERE publication_id = %s""", [publication_id]).fetchone()
+        assert item["content_hash"] is None and item["decision_payload_hash"]
+        assert current["content_hash"] is None
+        assert current["decision_payload_hash"] == item["decision_payload_hash"]
+        assert item["body"] == current["body"] == before
+        assert connection.execute("SELECT count(*) AS n FROM app.publication_payload").fetchone()["n"] == 0
+
+
+def test_option_snapshot_and_features_are_read_projections_of_candidate(storage):
+    snapshot_keys = ("snapshot_time", "ticker", "underlying_price", "expiration", "strike",
+                     "option_type", "bid", "ask", "mid", "volume", "open_interest", "iv",
+                     "delta", "dte", "spread_pct", "data_source", "contract_id", "raw")
+    feature_keys = ("snapshot_time", "contract_id", "ticker", "required_2x_price",
+                    "required_5x_price", "required_10x_price", "required_move_pct",
+                    "liquidity_score", "convexity_score", "raw")
+    candidate = {key: None for key in (*snapshot_keys, *feature_keys)}
+    candidate.update({"candidate_event_id": str(uuid4()), "contract_id": "123", "ticker": "OPTION",
+                      "snapshot_time": "2026-09-25T14:00:00+00:00", "mid": 1.25,
+                      "required_move_pct": 0.12345678901234568, "raw": {"source": "exact"}})
+    snapshot = {key: candidate[key] for key in snapshot_keys}
+    feature = {key: candidate[key] for key in feature_keys}
+    analysis = AnalysisRepository(storage.runtime)
+    run_id = analysis.start_run("options-radar", input_cutoff=datetime.now(UTC),
+                                code_version="projection-test", inputs={"candidate": candidate["candidate_event_id"]})
+    publication_id = analysis.publish(run_id, "options-radar", {
+        "candidate_event": [candidate], "option_snapshot": [snapshot], "option_features": [feature],
+    })
+    with storage.runtime.read() as connection:
+        physical = connection.execute("""SELECT count(*) AS n FROM app.publication_bundle_item item
+            JOIN app.publication publication ON publication.bundle_id = item.bundle_id
+            WHERE publication.id = %s""", [publication_id]).fetchone()["n"]
+        rows = connection.execute("""SELECT model_name, payload FROM app.publication_content_item
+            WHERE publication_id = %s ORDER BY model_name""", [publication_id]).fetchall()
+    assert physical == 1
+    assert {row["model_name"]: row["payload"] for row in rows} == {
+        "candidate_event": candidate, "option_snapshot": snapshot, "option_features": feature,
+    }
+    assert analysis.publication_rows("options-radar", "option_snapshot") == [snapshot]
+    assert analysis.publication_rows("options-radar", "option_features") == [feature]
+    distinct_feature = {**feature, "distinct_model_result": "keep"}
+    second_run = analysis.start_run("options-radar", input_cutoff=datetime.now(UTC),
+                                    code_version="projection-test", inputs={"distinct": str(uuid4())})
+    second_id = analysis.publish(second_run, "options-radar", {
+        "candidate_event": [candidate], "option_snapshot": [snapshot],
+        "option_features": [distinct_feature],
+    })
+    with storage.runtime.read() as connection:
+        second = connection.execute("""SELECT bundle.projection_version,
+            (SELECT count(*) FROM app.publication_bundle_item item
+             WHERE item.bundle_id = bundle.id) AS physical
+            FROM app.publication publication JOIN app.publication_bundle bundle
+              ON bundle.id = publication.bundle_id WHERE publication.id = %s""",
+            [second_id]).fetchone()
+    assert second == {"projection_version": None, "physical": 3}
+    assert analysis.publication_rows("options-radar", "option_features") == [distinct_feature]
 
 
 def test_input_normalization_lossless_precision_sharing_and_restart(storage):

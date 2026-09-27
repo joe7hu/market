@@ -533,6 +533,28 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
             assert connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()["count"] == orders
             assert connection.execute("SELECT count(*) AS count FROM app.publication_payload").fetchone()["count"] == incomplete_payload_count
 
+        # An unchanged LANE check must drop a ticker left in the current
+        # ranking by a broader earlier run when BROKEN fails evaluation.
+        _, current_models = analysis.current_ranking_rows()
+        extra = {name: list(rows) for name, rows in current_models.items()}
+        extra["opportunity_rank"].append({"stable_key": "OTHER:rank", "ticker": "OTHER", "rank_id": "other"})
+        extra["trade_plan"].append({"stable_key": "OTHER:plan", "ticker": "OTHER", "trade_plan_id": "other"})
+        extra_run = analysis.start_run(
+            ticker_decisions.RANKING_SCOPE, input_cutoff=decision_cutoff + timedelta(seconds=3),
+            code_version="fixture-extra", inputs={"fixture": "extra-ticker"},
+        )
+        extra_id = analysis.publish(extra_run, ticker_decisions.RANKING_SCOPE, extra)
+        narrowed = ticker_decisions.publish(
+            "config.yaml", symbols=["LANE", "BROKEN"], as_of=decision_cutoff,
+            market_state_publication_id=market_publication_id,
+        )
+        assert narrowed["ranking_publication_id"] != str(extra_id)
+        assert {row["ticker"] for row in analysis.publication_rows(
+            ticker_decisions.RANKING_SCOPE, "opportunity_rank")} == {"LANE"}
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM analysis.ticker_decision").fetchone()["count"] == before
+            assert connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()["count"] == orders
+
     finally:
         runtime.close()
 

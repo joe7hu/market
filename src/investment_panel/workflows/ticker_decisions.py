@@ -592,6 +592,13 @@ def _current_ranking_covers(decisions: Mapping[str, Any],
     current_id, models = repository.current_ranking_rows()
     ranks = models.get("opportunity_rank", [])
     plans = models.get("trade_plan", [])
+    expected_tickers = set(decisions)
+    if any({str(row.get("ticker") or "") for row in models.get(model, [])} != expected_tickers
+           for model in ("opportunity_rank", "trade_plan", "instrument_state_snapshot")):
+        return None
+    if any(str(row.get("ticker") or "") not in expected_tickers
+           for row in models.get("alpha_signal", [])):
+        return None
     for ticker, decision in decisions.items():
         expected_rank = (decision.opportunity_rank or {}).get("rank_id")
         expected_plan = decision.trade_plan

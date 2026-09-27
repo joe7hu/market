@@ -32,6 +32,14 @@ __all__ = [
 
 
 RANKING_VERSION = "options-radar-ranking.v1"
+OPTION_SUBSET_KEYS = {
+    "option_snapshot": ("snapshot_time", "ticker", "underlying_price", "expiration", "strike",
+                        "option_type", "bid", "ask", "mid", "volume", "open_interest", "iv",
+                        "delta", "dte", "spread_pct", "data_source", "contract_id", "raw"),
+    "option_features": ("snapshot_time", "contract_id", "ticker", "required_2x_price",
+                        "required_5x_price", "required_10x_price", "required_move_pct",
+                        "liquidity_score", "convexity_score", "raw"),
+}
 
 
 def candidate_set_changes(
@@ -574,16 +582,8 @@ def publication_models(
             ],
         )
     symbol_summaries = _symbol_summaries(all_rows, [dict(row) for row in rejected])
-    snapshots = _unique_contract_rows(all_rows, (
-        "snapshot_time", "ticker", "underlying_price", "expiration", "strike",
-        "option_type", "bid", "ask", "mid", "volume", "open_interest", "iv",
-        "delta", "dte", "spread_pct", "data_source", "contract_id", "raw",
-    ))
-    features = _unique_contract_rows(all_rows, (
-        "snapshot_time", "contract_id", "ticker", "required_2x_price",
-        "required_5x_price", "required_10x_price", "required_move_pct",
-        "liquidity_score", "convexity_score", "raw",
-    ))
+    snapshots = _unique_contract_rows(all_rows, OPTION_SUBSET_KEYS["option_snapshot"])
+    features = _unique_contract_rows(all_rows, OPTION_SUBSET_KEYS["option_features"])
     latest_row = max(
         (row for row in all_rows if row.get("snapshot_time") is not None),
         key=lambda row: row["snapshot_time"],

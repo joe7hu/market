@@ -9,7 +9,7 @@ from typing import Any
 
 from investment_panel.settings import load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
-from investment_panel.infrastructure.postgres.decision_storage import backfill_ranking_publication_refs, compact_context_batch, compact_decision_evidence_batch
+from investment_panel.infrastructure.postgres.decision_storage import backfill_ranking_publication_payloads, backfill_ranking_publication_refs, compact_context_batch, compact_decision_evidence_batch
 from investment_panel.infrastructure.postgres.decision_inputs import compact_input_batch
 from investment_panel.infrastructure.postgres.hot_retention import HotRetention
 from investment_panel.infrastructure.postgres.manifest_archive import ManifestArchive
@@ -40,7 +40,7 @@ def run(
     execute: bool = False,
     expire: bool = False,
 ) -> dict[str, Any]:
-    batch_size = batch_size if batch_size is not None else (25 if phase in {"decision-context", "decision-inputs", "decision-evidence", "ranking-refs"} else 10 if phase in {"publications", "option-scans", "ticker-decisions"} else 500)
+    batch_size = batch_size if batch_size is not None else (25 if phase in {"decision-context", "decision-inputs", "decision-evidence", "ranking-refs", "ranking-payloads"} else 10 if phase in {"publications", "option-scans", "ticker-decisions"} else 500)
     service = _service(config_path)
     if command == "account":
         return service.account(record=True)
@@ -87,6 +87,11 @@ def run(
             raise ValueError("ranking-refs state must be plan or backfill")
         return backfill_ranking_publication_refs(service.runtime, batch_size=batch_size,
             execute=execute and state == "backfill")
+    if command == "compact" and phase == "ranking-payloads":
+        if state not in {"plan", "backfill"}:
+            raise ValueError("ranking-payloads state must be plan or backfill")
+        return backfill_ranking_publication_payloads(service.runtime, batch_size=batch_size,
+            execute=execute and state == "backfill")
     if command == "compact" and phase == "decision-context":
         if state not in {"plan", "backfill"}:
             raise ValueError("decision-context state must be plan or backfill")
@@ -130,7 +135,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Verified, resumable Market storage operations")
     parser.add_argument("command", choices=("plan", "account", "archive", "verify", "compact", "restore"))
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--phase", choices=sorted(ARCHIVE_KINDS | {"price-confirmations", "decision-context", "decision-inputs", "decision-evidence", "ranking-refs", "hot-options", "relative-values"}))
+    parser.add_argument("--phase", choices=sorted(ARCHIVE_KINDS | {"price-confirmations", "decision-context", "decision-inputs", "decision-evidence", "ranking-refs", "ranking-payloads", "hot-options", "relative-values"}))
     parser.add_argument("--state", choices=("plan", "backfill", "verify", "cutover", "gc"), default="plan")
     parser.add_argument("--batch-size", type=int, help="phase-specific bounded batch size")
     parser.add_argument("--max-batches", type=int, default=1, help="bounded archive batches per phase per invocation")

@@ -26,6 +26,7 @@ from investment_panel.infrastructure.postgres.opportunity_episodes import (
 )
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.infrastructure.postgres.decision_storage import lock_decision_evidence_writer
+from investment_panel.infrastructure.postgres.options_publication import OPTION_SUBSET_KEYS
 from investment_panel.domain.decision import StrategyForecast, strategy_forecast_id_for_payload
 
 
@@ -1004,6 +1005,7 @@ class AnalysisRepository:
         strategy_root_key: str | None = None,
     ) -> UUID:
         prepared = _prepare_models(models)
+        projection_version = _collapse_option_subsets(prepared) if scope == "options-radar" else None
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [f"publication:{scope}"])
             if strategy_root_key:
@@ -1043,7 +1045,8 @@ class AnalysisRepository:
                     item["decision_payload_hash"] = digest
                     item["content_hash"] = None
                     item["payload"] = None
-            bundle_hash = _hash({"scope": scope, "items": bundle_rows})
+            bundle_hash = _hash({"scope": scope, "items": bundle_rows,
+                                 **({"projection_version": projection_version} if projection_version else {})})
             existing = connection.execute(
                 """
                 SELECT publication.id, publication.status, publication.bundle_id
@@ -1108,12 +1111,12 @@ class AnalysisRepository:
                 return existing_id
             bundle = connection.execute(
                 """
-                INSERT INTO app.publication_bundle (scope, bundle_hash, item_count)
-                VALUES (%s, %s, %s)
+                INSERT INTO app.publication_bundle (scope, bundle_hash, item_count, projection_version)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (scope, bundle_hash) DO NOTHING
                 RETURNING id
                 """,
-                [scope, bundle_hash, len(bundle_rows)],
+                [scope, bundle_hash, len(bundle_rows), projection_version],
             ).fetchone()
             bundle_created = bundle is not None
             if bundle is None:
@@ -1595,6 +1598,32 @@ def _prepare_models(models: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[s
     return prepared
 
 
+def _collapse_option_subsets(prepared: dict[str, list[dict[str, Any]]]) -> str | None:
+    """Keep only candidate rows when both option projections match exactly."""
+    if not all(model in prepared for model in ("candidate_event", *OPTION_SUBSET_KEYS)):
+        return None
+    candidates: dict[str, Mapping[str, Any]] = {}
+    for row in prepared["candidate_event"]:
+        payload = row["payload"]
+        contract_id = payload.get("contract_id")
+        if contract_id is None:
+            return None
+        candidates[str(contract_id)] = payload
+    for model, keys in OPTION_SUBSET_KEYS.items():
+        expected = []
+        for contract_id, payload in candidates.items():
+            if any(key not in payload for key in keys):
+                return None
+            expected.append({"stable_key": contract_id, "instrument_id": None,
+                             "canonical_publication_id": None,
+                             "payload": {key: payload[key] for key in keys}})
+        if prepared[model] != expected:
+            return None
+    for model in OPTION_SUBSET_KEYS:
+        del prepared[model]
+    return "option-subsets-v1"
+
+
 def _bundle_rows(prepared: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[dict[str, Any]]:
     """Flatten a canonical publication bundle into deduplicated payload refs."""
 
@@ -1647,9 +1676,14 @@ def _publication_payload_rows(connection: Any, row: Mapping[str, Any]) -> Sequen
                    item.payload
             FROM app.publication_bundle_item_read item
             WHERE item.bundle_id = %s
-            ORDER BY item.model_name, item.rank
+            UNION ALL
+            SELECT item.model_name, item.rank, NULL::uuid AS canonical_publication_id,
+                   item.payload
+            FROM app.option_publication_projection item
+            WHERE item.bundle_id = %s
+            ORDER BY model_name, rank
             """,
-            [row["bundle_id"]],
+            [row["bundle_id"], row["bundle_id"]],
         ).fetchall()
     return connection.execute(
         """

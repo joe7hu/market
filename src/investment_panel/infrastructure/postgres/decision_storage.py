@@ -101,6 +101,67 @@ def backfill_ranking_publication_refs(
             "input_bytes_processed": consumed}
 
 
+def backfill_ranking_publication_payloads(
+    runtime: DatabaseRuntime, *, batch_size: int = 25, execute: bool = False,
+) -> dict[str, Any]:
+    """Move exact legacy ranking objects to the existing immutable evidence owner."""
+    if not 1 <= batch_size <= 100:
+        raise ValueError("ranking payload batch_size must be between 1 and 100")
+    condition = """bundle.scope = 'ticker-opportunity-ranking'
+        AND item.model_name IN ('instrument_state_snapshot', 'alpha_signal',
+                                'opportunity_rank', 'trade_plan')
+        AND item.content_hash IS NOT NULL"""
+    with runtime.transaction(JOB_PROFILE) if execute else runtime.read(JOB_PROFILE) as connection:
+        if not execute:
+            remaining = connection.execute(f"""SELECT count(*) AS n
+                FROM app.publication_bundle_item item
+                JOIN app.publication_bundle bundle ON bundle.id = item.bundle_id
+                WHERE {condition}""").fetchone()["n"]
+            return {"phase": "ranking-payloads", "dry_run": True, "remaining": int(remaining)}
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                           ["publication:ticker-opportunity-ranking"])
+        lock_decision_evidence_writer(connection)
+        connection.execute("""LOCK TABLE app.publication_bundle_item,
+            app.current_publication_item IN SHARE ROW EXCLUSIVE MODE""")
+        rows = connection.execute(f"""SELECT item.bundle_id, item.model_name, item.stable_key,
+                item.content_hash, payload.payload::text AS before,
+                pg_column_size(payload.payload) AS bytes
+            FROM app.publication_bundle_item item
+            JOIN app.publication_bundle bundle ON bundle.id = item.bundle_id
+            JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+            WHERE {condition}
+            ORDER BY item.bundle_id, item.model_name, item.stable_key
+            LIMIT %s FOR UPDATE OF item SKIP LOCKED""", [batch_size]).fetchall()
+        converted = consumed = released = 0
+        for row in rows:
+            size = int(row["bytes"])
+            if consumed + size > MAX_EVIDENCE_BATCH_BYTES:
+                if not converted:
+                    raise ValueError("individual ranking payload exceeds the 64 MiB maintenance budget")
+                break
+            key = [row["bundle_id"], row["model_name"], row["stable_key"]]
+            deleted = connection.execute("""SELECT app.rehome_ranking_publication_payload(
+                %s, %s, %s) AS released""", key).fetchone()
+            after = connection.execute("""SELECT payload::text AS body
+                FROM app.publication_bundle_item_read
+                WHERE bundle_id = %s AND model_name = %s AND stable_key = %s""",
+                key).fetchone()
+            if after is None or after["body"] != row["before"]:
+                raise ValueError("ranking publication read changed; batch rolled back")
+            current = connection.execute("""SELECT current_item.payload::text AS body
+                FROM app.current_publication_item_read current_item
+                JOIN app.publication publication ON publication.id = current_item.publication_id
+                WHERE publication.bundle_id = %s AND current_item.model_name = %s
+                  AND current_item.stable_key = %s""", key).fetchone()
+            if current is not None and current["body"] != row["before"]:
+                raise ValueError("current ranking read changed; batch rolled back")
+            released += int(deleted["released"])
+            converted += 1
+            consumed += size
+    return {"phase": "ranking-payloads", "dry_run": False, "converted": converted,
+            "input_bytes_processed": consumed, "redundant_payloads_released": released}
+
+
 def require_maintenance_headroom(*, minimum_bytes: int) -> None:
     """Operator identifies the actual PGDATA/tablespace backing filesystem."""
     configured = os.environ.get("MARKET_STORAGE_DATABASE_PATH", "").strip()
