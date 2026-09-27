@@ -12,7 +12,7 @@ from investment_panel.api import dependencies
 from investment_panel.workflows.tickers import TickerActions
 from investment_panel.api.contracts import ContextualAssistantResponseInput, TickerPaperEntryInput
 from investment_panel.application.read_models import loaders, payloads
-from investment_panel.api.response_contracts import ContextualAssistantPacketResponse, ContextualAssistantResponse, TickerDecisionSnapshotResponse, TickerDetailResponse, TickerPaperEntryResponse
+from investment_panel.api.response_contracts import ContextualAssistantPacketResponse, ContextualAssistantResponse, TickerDecisionEvidenceResponse, TickerDecisionSnapshotResponse, TickerDetailResponse, TickerPaperEntryResponse
 from investment_panel.core.contextual_assistant import build_contextual_packet, validate_contextual_response
 from investment_panel.settings import AppConfig
 from investment_panel.domain.decision import TickerDecision
@@ -20,7 +20,8 @@ from investment_panel.domain.decision import TickerDecision
 router = APIRouter()
 
 
-@router.get("/api/ticker-decisions/{decision_id}/evidence")
+@router.get("/api/ticker-decisions/{decision_id}/evidence", response_model=TickerDecisionEvidenceResponse,
+            response_model_exclude_none=True)
 def ticker_decision_evidence(
     decision_id: UUID,
     evidence_reader: Callable[[UUID], dict[str, Any]] = Depends(dependencies.get_ticker_decision_evidence),

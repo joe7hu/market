@@ -1324,6 +1324,13 @@ class TickerDecisionSnapshotResponse(TickerDecision):
     learning: JsonObject = Field(default_factory=dict)
 
 
+class TickerDecisionEvidenceResponse(BaseModel):
+    status: Literal["complete", "archived", "unavailable"]
+    reason: str | None = None
+    archive_manifest_id: int | None = None
+    decision: Row | None = None
+
+
 class ThesisMutationResponse(FlexibleResponse):
     thesis: Row
     thesis_monitor: Row | None = None

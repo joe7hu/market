@@ -8147,6 +8147,22 @@ export interface components {
             /** Ticker */
             ticker: string;
         };
+        /** TickerDecisionEvidenceResponse */
+        TickerDecisionEvidenceResponse: {
+            /** Archive Manifest Id */
+            archive_manifest_id?: number | null;
+            /** Decision */
+            decision?: {
+                [key: string]: unknown;
+            } | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "complete" | "archived" | "unavailable";
+        };
         /**
          * TickerDecisionSnapshotResponse
          * @description The full validated decision and its derived learning context.
@@ -11980,9 +11996,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["TickerDecisionEvidenceResponse"];
                 };
             };
             /** @description Validation Error */

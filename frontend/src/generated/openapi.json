@@ -17855,6 +17855,58 @@
         "title": "TickerDecisionDetailResponse",
         "type": "object"
       },
+      "TickerDecisionEvidenceResponse": {
+        "properties": {
+          "archive_manifest_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive Manifest Id"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "complete",
+              "archived",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "TickerDecisionEvidenceResponse",
+        "type": "object"
+      },
       "TickerDecisionSnapshotResponse": {
         "description": "The full validated decision and its derived learning context.",
         "properties": {
@@ -25560,9 +25612,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Ticker Decision Evidence Api Ticker Decisions  Decision Id  Evidence Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/TickerDecisionEvidenceResponse"
                 }
               }
             },

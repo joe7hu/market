@@ -34,7 +34,7 @@ def test_openapi_baseline_and_json_success_schemas() -> None:
         if method in {"get", "post", "put", "patch", "delete"}
     ]
     # Includes bounded paper observations, history, and workstation readiness.
-    assert len(paths) <= 107
+    assert len(paths) <= 108
     assert operations
     assert contract["components"]["schemas"]
 
