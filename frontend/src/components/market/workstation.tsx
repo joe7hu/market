@@ -18,7 +18,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useMarketData } from "@/marketData";
@@ -96,8 +95,6 @@ export function AppShell() {
 
             {location.pathname.startsWith("/health") ? (
               <div className="ml-auto hidden items-center gap-2 text-xs text-muted-foreground md:flex">
-                <SourceHealthBadge />
-                <Separator orientation="vertical" className="h-5" />
                 <span className="flex items-center gap-1">
                   <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
                   {lastRefresh ? lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : model.latestHealthCheck || "Not loaded"}
@@ -340,18 +337,7 @@ export function EmptyState({ title, detail, icon: Icon = Database }: { title: st
   );
 }
 
-export function SourceHealthBadge() {
-  const { model, loading, lastRefresh } = useMarketData();
-  const sourceStates = Object.values(model.sources);
-  const available = sourceStates.filter((state) => state === "live").length;
-  const tone = criticalDataCoverageTone(sourceStates, loading);
-  return <StatusBadge tone={tone}>{loading ? "Checking critical data" : `Critical data: ${available}/${sourceStates.length} available`}</StatusBadge>;
-}
 
-export function criticalDataCoverageTone(sourceStates: string[], loading: boolean): Tone {
-  if (loading) return "info";
-  return sourceStates.length > 0 && sourceStates.every((state) => state === "live") ? "good" : "warn";
-}
 
 function toneSurface(tone: Tone) {
   return {
