@@ -13,7 +13,8 @@ All execution remains paper only.
 | Quote and current mark writes fail | Live ingestion failures include duplicate primary keys and deadlocks in both paper mark projections. Concurrent transactions deleted and inserted the same projection rows. | Reuse the existing option snapshot writer lock. Acquire it before fact, ingestion run, and capture recovery row locks. Both mark functions use a new clock after the wait. Keep the existing confirmed-fact selection rules. |
 | Recovery strategy binding fails | Revision 1 already has immutable `unavailable/1` bindings. The producer tried to assign `options_recovery/2` to those same revisions. | Create revision 2. Preserve old bindings, parameters, and history. |
 | Hot option retention times out | A bounded 500-quote lookup repeatedly scanned about 1.16 million option decisions. Its estimated plan cost was about 2.5 billion. | Add the exact `(snapshot_id, quote_observed_at, contract_id)` access index. Preserve archive and evidence pin rules. |
-| Trading signals time out | Reading today's prior brief called `option_bundle_projection` across historical option bundles, although that function only produces two unrelated models. | Expose the two option model names before the opaque function in the shared current and historical views. The planner can remove that branch for other models. Preserve bundle limits and all payloads. |
+| Trading signals time out | Reads called `option_bundle_projection` across historical option bundles for unrelated models or one unrelated bundle. | Expose the two option model names before the opaque function in the shared current and historical views. Expose the base bundle ID in the option projection view so bundle filters apply before the function. Preserve all payloads. |
+| Quote writes fail during normal serialized work | A live quote capture failed with the inherited 2-second lock timeout while other writer work ran. The concurrency regression reproduces this with a valid 2.25-second writer. | Scheduled jobs use a bounded 10-second lock wait. Interactive reads retain their original timeout; retention keeps its maintenance profile. Deadlock and statement limits remain active. |
 
 ## Checks
 
@@ -26,8 +27,8 @@ archive pins, publication payload equivalence, and migration downgrade.
 Independent review found additional lock-order faults. Each accepted finding was
 reproduced and repaired before the final candidate was tested.
 
-The final candidate passed 144 focused tests, `make guards`, `make check`, and
-`make release-gate`: 2,580 tests and 84.42% coverage. The final independent review
+The final follow-up passed 112 focused tests, `make guards`, `make check`, and
+`make release-gate`: 2,581 tests and 84.42% coverage. The final independent review
 reported no actionable findings.
 
 Raw audit evidence is in `/tmp/market-health-audit-20260928`. Deployment uses a

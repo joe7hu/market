@@ -14,6 +14,7 @@ from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
 from investment_panel.infrastructure.postgres.options_history import OptionHistoryRepository
+from investment_panel.infrastructure.postgres.options_publication import OPTION_SUBSET_KEYS
 from investment_panel.infrastructure.postgres import options
 from investment_panel.infrastructure.postgres.options_recovery_execution import RecoveryExecutionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
@@ -221,6 +222,37 @@ def test_active_contract_lookup_does_not_read_its_full_quote_history(migrated_po
         runtime.close()
 
 
+def test_price_job_waits_for_a_normal_serial_writer(migrated_postgres_dsn):
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source("writer-wait", name="Writer wait", family="market", kind="quote", operational_state="active", health_owner="refresh_paper_quotes", freshness_seconds=60)
+        run = ingestion.start_run("writer-wait", "quotes")
+        with psycopg.connect(migrated_postgres_dsn) as writer, psycopg.connect(migrated_postgres_dsn) as observer:
+            writer.execute("SELECT pg_advisory_xact_lock(hashtextextended('raw.option_quote.partition', 0))")
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(ingestion.store_quotes, run, "writer-wait", [{"symbol": "WAITQUOTE", "price": 456, "observed_at": datetime.now(UTC)}])
+                try:
+                    for _ in range(100):
+                        blocked = observer.execute("SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event = 'advisory'").fetchone()
+                        observer.commit()
+                        if blocked:
+                            break
+                        sleep(0.01)
+                    assert blocked
+                    # A valid writer can hold the shared lock beyond the old 2s budget.
+                    sleep(2.25)
+                finally:
+                    writer.commit()
+                assert future.result(timeout=5) == 1
+        ingestion.finish_run(run, "succeeded")
+        with runtime.read() as connection:
+            assert connection.execute("SELECT price FROM analysis.paper_current_mark_projection mark JOIN catalog.instrument instrument ON instrument.id = mark.instrument_id WHERE instrument.symbol = 'WAITQUOTE'").fetchone()["price"] == 456
+    finally:
+        runtime.close()
+
+
 def test_unrelated_publication_reads_do_not_run_option_projections(migrated_postgres_dsn):
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -231,8 +263,12 @@ def test_unrelated_publication_reads_do_not_run_option_projections(migrated_post
         brief = {"brief_date": cutoff.date().isoformat(), "summary": "test brief"}
         analysis.publish(run, "today", {"preopen_daily_brief": [brief]})
         option_run = analysis.start_run("options-radar", input_cutoff=cutoff, code_version="health-test", inputs={})
-        analysis.publish(option_run, "options-radar", {"candidate_event": [{"contract_id": "health-option", "ticker": "HEALTH"}], "option_snapshot": [{"contract_id": "health-option"}], "option_features": [{"contract_id": "health-option"}]})
+        candidate = {key: None for keys in OPTION_SUBSET_KEYS.values() for key in keys}
+        candidate.update(contract_id="health-option", ticker="HEALTH", candidate_event_id=str(uuid4()))
+        option_publication = analysis.publish(option_run, "options-radar", {"candidate_event": [candidate],
+            **{model: [{key: candidate[key] for key in keys}] for model, keys in OPTION_SUBSET_KEYS.items()}})
         with runtime.transaction() as connection:
+            assert connection.execute("SELECT bundle.projection_version FROM app.publication publication JOIN app.publication_bundle bundle ON bundle.id = publication.bundle_id WHERE publication.id = %s", [option_publication]).fetchone()["projection_version"] == "option-subsets-v1"
             # Any call for an unrelated model is the regression, regardless of data size.
             definition = connection.execute("SELECT pg_get_functiondef('app.option_bundle_projection(uuid)'::regprocedure) AS definition").fetchone()["definition"]
             header = definition[:definition.index("LANGUAGE sql")]
@@ -241,6 +277,8 @@ def test_unrelated_publication_reads_do_not_run_option_projections(migrated_post
             with runtime.read() as connection:
                 rows = connection.execute(f"SELECT payload FROM {relation} WHERE model_name = 'preopen_daily_brief'").fetchall()
                 assert [row["payload"] for row in rows] == [brief]
+        publication = analysis.publication_at_or_before("today", cutoff=datetime.now(UTC))
+        assert publication is not None
     finally:
         runtime.close()
 

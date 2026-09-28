@@ -26,7 +26,8 @@ class RuntimeProfile:
 
 
 API_PROFILE = RuntimeProfile(statement_timeout_ms=3_000, jit=False)
-JOB_PROFILE = RuntimeProfile(statement_timeout_ms=900_000)
+# Serial price/maintenance writers can outlast the API's short lock budget.
+JOB_PROFILE = RuntimeProfile(statement_timeout_ms=900_000, lock_timeout_ms=10_000)
 APPLICATION_ROLE = "market_app"
 EVALUATOR_WRITER_SIGNATURE = (
     "analysis.write_research_evaluator_output(uuid,uuid,uuid,text,text,text,text,text,text,"
