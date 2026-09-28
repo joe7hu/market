@@ -242,7 +242,7 @@ supports `document.modelContext`, enable the five read-only inspection tools:
 ```bash
 VITE_MARKET_WEBMCP=true npm --prefix frontend run dev
 # For the bundled frontend, the flag must be set when building:
-VITE_MARKET_WEBMCP=true npm --prefix frontend run build
+VITE_MARKET_WEBMCP=true npm --prefix frontend run dev
 ```
 
 This exposes private app evidence to your trusted browser agent, not to a new
@@ -255,8 +255,9 @@ requirements, limitations and acceptance checks.
 
 See [the September 21 repair and deployment guide](docs/decision-loop-repair.md)
 for canonical capital decisions, monitored-scope diagnostics, quote-backed research
-experiment P&L, and independent forecast settlement. Apply migration
-`20260921_0033` before starting this revision.
+experiment P&L, and independent forecast settlement. For a current checkout, use
+`uv run market-db-migrate` in the documented maintenance window rather than
+pinning the schema to the historical guide's `20260921_0033` revision.
 
 ## Hot and cold storage
 
@@ -265,3 +266,16 @@ row packs hold eligible raw/derived history. Hourly bounded retention, lossless
 decision-input sharing, restore contracts and the Mac deployment sequence are in
 [Hot-storage lifecycle](docs/hot-storage-lifecycle.md). Logical cleanup does not
 by itself shrink database files.
+
+Inspect every table, column, index and constraint without reading provider
+payloads or modifying the database:
+
+```bash
+uv run market-storage audit --config config.yaml > storage-audit.json
+```
+
+The [schema audit and retention decisions](docs/acceptance/storage-schema-audit-20260927.md)
+explain retained evidence, retry deduplication, bounded publication reads, index
+choices and remaining production measurements. Migration `20260927_0042` needs
+index-build headroom and a quiet writer window. It does not perform a physical
+rewrite or authorize a second storage-drain worker.
