@@ -200,11 +200,13 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                decision.opportunity_episode
         FROM analysis.ticker_decision decision
         CROSS JOIN LATERAL (SELECT analysis.expand_decision_manifest(
-            decision.input_manifest, decision.evidence_refs, decision.opportunity_episode) AS value) manifest
+            decision.input_manifest, decision.evidence_refs, decision.opportunity_episode) AS value
+            OFFSET 0) manifest
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE decision.status IN ('published', 'superseded')
           AND decision.as_of <= %s
           AND jsonb_typeof(manifest.value->'trade_plan') = 'object'
+        OFFSET 0
     )
     SELECT decisions.*
     FROM decisions
@@ -1316,7 +1318,7 @@ class TickerDecisionRepository:
                                ORDER BY decision.as_of DESC, decision.published_at DESC,
                                         decision.created_at DESC, decision.id DESC
                            ) AS current_row
-                    FROM analysis.ticker_decision_read decision
+                    FROM analysis.ticker_decision decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                     WHERE decision.status = 'published'
                       AND (%s::text[] IS NULL OR instrument.symbol = ANY(%s))
@@ -1328,6 +1330,14 @@ class TickerDecisionRepository:
                       AND decision.as_of <= %s
                       AND decision.published_at IS NOT NULL
                       AND decision.published_at <= %s
+                ), current_contracts AS MATERIALIZED (
+                    -- Expand each current resolution once; leave unused evidence lazy.
+                    SELECT decision.id, decision.capital_action, decision.resolution
+                    FROM candidate_keys candidate
+                    JOIN analysis.ticker_decision_read decision ON decision.id = candidate.id
+                    WHERE candidate.current_row = 1
+                      AND candidate.authority_count = 1
+                      AND candidate.opportunity_authority_count = 1
                 )
                 SELECT candidate.ticker, decision.as_of, decision.published_at,
                        decision.decision_revision, decision.policy_version,
@@ -1430,70 +1440,71 @@ class TickerDecisionRepository:
                        END AS impact_lineage_match,
                        CASE WHEN compact_candidate.fast_cash
                             THEN jsonb_build_object(
-                                'contract_version', decision.resolution->'contract_version',
-                                'lifecycle', decision.resolution->'lifecycle',
-                                'eligibility', decision.resolution->'eligibility',
-                                'authorization_mode', decision.resolution->'authorization_mode',
-                                'data_quality', decision.resolution->'data_quality',
-                                'action', decision.resolution->'action',
-                                'trade_plan_id', decision.resolution->'trade_plan_id',
-                                'primary_blocker', decision.resolution->'primary_blocker',
-                                'blockers', coalesce(decision.resolution->'blockers', '[]'::jsonb),
-                                'next_action', decision.resolution->'next_action',
-                                'policy_version', decision.resolution->'policy_version',
-                                'decision_revision', decision.resolution->'decision_revision',
-                                'ticker', decision.resolution->'ticker'
+                                'contract_version', contract.resolution->'contract_version',
+                                'lifecycle', contract.resolution->'lifecycle',
+                                'eligibility', contract.resolution->'eligibility',
+                                'authorization_mode', contract.resolution->'authorization_mode',
+                                'data_quality', contract.resolution->'data_quality',
+                                'action', contract.resolution->'action',
+                                'trade_plan_id', contract.resolution->'trade_plan_id',
+                                'primary_blocker', contract.resolution->'primary_blocker',
+                                'blockers', coalesce(contract.resolution->'blockers', '[]'::jsonb),
+                                'next_action', contract.resolution->'next_action',
+                                'policy_version', contract.resolution->'policy_version',
+                                'decision_revision', contract.resolution->'decision_revision',
+                                'ticker', contract.resolution->'ticker'
                             )
-                            WHEN octet_length(decision.resolution::text) <= 196608
+                            WHEN octet_length(contract.resolution::text) <= 196608
                             THEN jsonb_build_object(
-                                'contract_version', decision.resolution->'contract_version',
-                                'lifecycle', decision.resolution->'lifecycle',
-                                'eligibility', decision.resolution->'eligibility',
-                                'status', decision.resolution->'status',
-                                'authorization_mode', decision.resolution->'authorization_mode',
-                                'authorization', decision.resolution->'authorization',
-                                'data_quality', decision.resolution->'data_quality',
-                                'data_quality_status', decision.resolution->'data_quality_status',
-                                'action', decision.resolution->'action',
-                                'trade_plan_id', decision.resolution->'trade_plan_id',
-                                'primary_blocker', decision.resolution->'primary_blocker',
+                                'contract_version', contract.resolution->'contract_version',
+                                'lifecycle', contract.resolution->'lifecycle',
+                                'eligibility', contract.resolution->'eligibility',
+                                'status', contract.resolution->'status',
+                                'authorization_mode', contract.resolution->'authorization_mode',
+                                'authorization', contract.resolution->'authorization',
+                                'data_quality', contract.resolution->'data_quality',
+                                'data_quality_status', contract.resolution->'data_quality_status',
+                                'action', contract.resolution->'action',
+                                'trade_plan_id', contract.resolution->'trade_plan_id',
+                                'primary_blocker', contract.resolution->'primary_blocker',
                                 'blockers', CASE WHEN octet_length(coalesce(
-                                    decision.resolution->'blockers', '[]'::jsonb
+                                    contract.resolution->'blockers', '[]'::jsonb
                                 )::text) <= 8192
-                                    THEN coalesce(decision.resolution->'blockers', '[]'::jsonb)
+                                    THEN coalesce(contract.resolution->'blockers', '[]'::jsonb)
                                     ELSE '["decision_resolution_invalid"]'::jsonb
                                 END,
-                                'next_action', decision.resolution->'next_action',
+                                'next_action', contract.resolution->'next_action',
                                 'entry', CASE WHEN lower(coalesce(
-                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
-                                )) = 'actionable' THEN decision.resolution->'entry' END,
+                                    contract.resolution->>'eligibility', contract.resolution->>'status', ''
+                                )) = 'actionable' THEN contract.resolution->'entry' END,
                                 'size', CASE WHEN lower(coalesce(
-                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
-                                )) = 'actionable' THEN decision.resolution->'size' END,
+                                    contract.resolution->>'eligibility', contract.resolution->>'status', ''
+                                )) = 'actionable' THEN contract.resolution->'size' END,
                                 'invalidation', CASE WHEN lower(coalesce(
-                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
-                                )) = 'actionable' THEN decision.resolution->'invalidation' END,
+                                    contract.resolution->>'eligibility', contract.resolution->>'status', ''
+                                )) = 'actionable' THEN contract.resolution->'invalidation' END,
                                 'exit', CASE WHEN lower(coalesce(
-                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
-                                )) = 'actionable' THEN decision.resolution->'exit' END,
+                                    contract.resolution->>'eligibility', contract.resolution->>'status', ''
+                                )) = 'actionable' THEN contract.resolution->'exit' END,
                                 'ttl', CASE WHEN lower(coalesce(
-                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
-                                )) = 'actionable' THEN decision.resolution->'ttl' END,
+                                    contract.resolution->>'eligibility', contract.resolution->>'status', ''
+                                )) = 'actionable' THEN contract.resolution->'ttl' END,
                                 'portfolio_context', CASE WHEN lower(coalesce(
-                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
-                                )) = 'actionable' THEN decision.resolution->'portfolio_context' END,
-                                'policy_version', decision.resolution->'policy_version',
-                                'policy_revision', decision.resolution->'policy_revision',
-                                'decision_revision', decision.resolution->'decision_revision',
-                                'revision', decision.resolution->'revision',
-                                'ticker', decision.resolution->'ticker'
+                                    contract.resolution->>'eligibility', contract.resolution->>'status', ''
+                                )) = 'actionable' THEN contract.resolution->'portfolio_context' END,
+                                'policy_version', contract.resolution->'policy_version',
+                                'policy_revision', contract.resolution->'policy_revision',
+                                'decision_revision', contract.resolution->'decision_revision',
+                                'revision', contract.resolution->'revision',
+                                'ticker', contract.resolution->'ticker'
                             )
                        END AS resolution,
                        decision.market_state_publication_id::text
                 FROM candidate_keys candidate
                 JOIN analysis.ticker_decision_read decision ON decision.id = candidate.id
+                JOIN current_contracts contract ON contract.id = candidate.id
                 CROSS JOIN LATERAL (
-                    SELECT lower(coalesce(decision.capital_action->>'action', ''))
+                    SELECT lower(coalesce(contract.capital_action->>'action', ''))
                                IN ('avoid', 'no_trade', 'cash')
                                AND lower(coalesce(decision.selected_expression->>'kind', 'cash')) = 'cash'
                                AND lower(coalesce(
@@ -1537,8 +1548,8 @@ class TickerDecisionRepository:
                         )) = 'available'
                         OR lower(coalesce(decision.selected_expression->>'kind', '')) NOT IN ('', 'cash')
                         OR lower(coalesce(
-                            decision.resolution->>'eligibility',
-                            decision.resolution->>'status',
+                            contract.resolution->>'eligibility',
+                            contract.resolution->>'status',
                             ''
                         )) <> 'blocked'
                     ) END AS required

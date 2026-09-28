@@ -9,12 +9,14 @@ export function useRefreshJobs() {
   const [payload, setPayload] = useState<RefreshJobsPayload | null>(null);
   const [pendingJobs, setPendingJobs] = useState<Set<string>>(() => new Set());
   const [startError, setStartError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       setPayload(await loadRefreshJobs());
-    } catch {
-      // Keep the last good payload; the reload button can retry.
+      setRefreshError(null);
+    } catch (reason) {
+      setRefreshError(`Refresh history could not be read. Retained rows may be stale. ${reason instanceof Error ? reason.message : "Reload to retry."}`);
     }
   }, []);
 
@@ -56,6 +58,7 @@ export function useRefreshJobs() {
   );
 
   return {
+    refreshError,
     allowlist: payload?.allowlist ?? [],
     rows: jobRows,
     jobStates,

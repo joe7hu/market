@@ -1,4 +1,5 @@
 """Integrated PostgreSQL contracts for the completed workstation paths."""
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -86,6 +87,38 @@ def test_status_reads_latest_normalized_decision_with_history(runtime):
     failed = WorkstationRepository(runtime).status(
         AppConfig(watchlist=[{"symbol": symbol}]))
     assert "decision_service" in failed["failed_reads"]
+
+
+def test_funnel_expands_current_evidence_once_per_decision(runtime, monkeypatch):
+    """Count actual PostgreSQL function calls, including nested expansion."""
+    symbol = "EXPANDREF"
+    with runtime.transaction() as connection:
+        reconcile_instrument(connection, symbol)
+    repository = TickerDecisionRepository(runtime)
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    for offset in range(3):
+        reference = cutoff + timedelta(minutes=offset)
+        repository.publish(build_ticker_decision(symbol, {
+            "decision_queue": [{"symbol": symbol, "stance": "NEUTRAL",
+                                "available_at": reference.isoformat()}],
+        }, as_of=reference))
+    original_read = runtime.read
+    calls = {}
+
+    @contextmanager
+    def counted_read(*args, **kwargs):
+        with original_read(*args, **kwargs) as connection:
+            connection.execute("SET LOCAL track_functions = 'all'")
+            yield connection
+            calls.update({row["funcname"]: row["calls"] for row in connection.execute(
+                "SELECT funcname, calls FROM pg_stat_xact_user_functions WHERE schemaname = 'analysis'"
+            )})
+
+    monkeypatch.setattr(runtime, "read", counted_read)
+    rows = repository._current_funnel_rows(reference=datetime.now(UTC), symbols=[symbol])
+    assert len(rows) == 1
+    assert rows[0]["as_of"] == cutoff + timedelta(minutes=2)
+    assert 0 < calls.get("expand_decision_resolution", 0) <= 2
 
 
 def test_unpriceable_experiment_mark_does_not_call_a_healthy_worker_down():

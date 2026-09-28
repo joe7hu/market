@@ -32,6 +32,7 @@ export function HealthRoute() {
   const jobs = useRefreshJobs();
   const decisionFunnel = useDecisionFunnel(jobs.rows);
   const [reloading, setReloading] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [optionHistory, setOptionHistory] = useState<OptionHistoryHealth | null>(null);
 
   useEffect(() => { void loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null)); }, []);
@@ -79,9 +80,10 @@ export function HealthRoute() {
   // button tracks its own local state instead of jobs.anyRunning.
   const reload = useCallback(async () => {
     setReloading(true);
+    setRefreshKey(value => value + 1);
     try {
       await Promise.all([
-        loadScope("health").catch(() => undefined),
+        loadScope("health", { force: true }).catch(() => undefined),
         jobs.refresh(),
         loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null)),
         decisionFunnel.refresh(),
@@ -104,7 +106,7 @@ export function HealthRoute() {
         </Button>
       }
     >
-      <WorkflowReadiness view="health" />
+      <WorkflowReadiness view="health" refreshKey={refreshKey} />
       <details className="rounded-xl border border-border bg-card p-4"><summary className="cursor-pointer font-semibold">Source coverage and storage — separate from decision readiness</summary><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{metrics.map(([label, value, caption]) => <div key={label} className="rounded border p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-semibold">{scopeStatus.health?.state === "loading" && !sourceRows.length ? "Loading" : value}</p><p className="mt-1 text-xs text-muted-foreground">{caption}</p></div>)}</div></details>
       <BuildIdentityCard />
       {scopeStatus.health?.state === "loading" && sourceRows.length === 0 ? (
@@ -113,6 +115,7 @@ export function HealthRoute() {
         </div>
       ) : null}
       <ScopeStatusNotice status={scopeStatus.health} onRetry={() => void reload()} />
+      {jobs.refreshError ? <p role="alert" className="text-sm text-destructive">{jobs.refreshError}</p> : null}
       <details className="rounded-md border border-border p-4" onToggle={(event) => { if (event.currentTarget.open) void loadScope("research-authority").catch(() => undefined); }}><summary className="cursor-pointer font-semibold">Research diagnostics</summary><ScopeStatusNotice status={scopeStatus["research-authority"]} onRetry={() => void loadScope("research-authority", { force: true })} /><ResearchAuthorityTable data={data} status={scopeStatus["research-authority"]} /></details>
       <DataFlowDiagram stages={flowStages} />
 

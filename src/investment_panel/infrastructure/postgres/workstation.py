@@ -238,6 +238,7 @@ class WorkstationRepository:
                                 decision.input_manifest, decision.input_payload_refs)
                             ELSE decision.input_manifest - 'inputs' END,
                             decision.evidence_refs, decision.opportunity_episode) AS manifest
+                        OFFSET 0
                     ) evidence
                 ) decision ON true
                 ORDER BY monitored.symbol

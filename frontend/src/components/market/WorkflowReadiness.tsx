@@ -49,7 +49,7 @@ function stateClass(state: unknown): string {
     ["skipped", "disabled"].includes(String(state)) ? "text-muted-foreground" : "text-amber-700 dark:text-amber-300";
 }
 
-export function WorkflowReadiness({ view = "today", onDataChanged }: { view?: ReadinessView; onDataChanged?: () => void }) {
+export function WorkflowReadiness({ view = "today", onDataChanged, refreshKey = 0 }: { view?: ReadinessView; onDataChanged?: () => void; refreshKey?: number }) {
   const [snapshot, setSnapshot] = useState<WorkstationStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -74,7 +74,7 @@ export function WorkflowReadiness({ view = "today", onDataChanged }: { view?: Re
     reload();
     const timer = setInterval(() => { if (document.visibilityState === "visible") reload(); }, 30000);
     return () => { mounted.current = false; clearInterval(timer); request.current?.abort(); };
-  }, [reload]);
+  }, [reload, refreshKey]);
   async function run(job: string) {
     setStarting(true); setQueued(null);
     try {
