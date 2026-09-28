@@ -284,7 +284,7 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
         intervals["refresh_decision_models"] = decision_seconds
 
     for job, env_name, default in (
-        ("update_social_sources", "MARKET_SOCIAL_REFRESH_SECONDS", 1800),
+        ("update_social_sources", "MARKET_SOCIAL_REFRESH_SECONDS", 900),
         ("update_research_sources", "MARKET_RESEARCH_REFRESH_SECONDS", 3600),
         ("update_arco_data", "MARKET_ARCO_REFRESH_SECONDS", 14400),
         ("update_market_data", "MARKET_MARKET_DATA_REFRESH_SECONDS", 3600),

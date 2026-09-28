@@ -103,7 +103,10 @@ def run_experiments(runtime: DatabaseRuntime, config: AppConfig, *, now: datetim
             if selected is not None:
                 break
     if selected is None:
-        return {"status": "skipped", "reason": "no_qualified_candidate", "observations": observed, "blocked": blocked}
+        return {"status": "skipped", "reason": "no_qualified_candidate", "observations": observed, "blocked": blocked,
+                "candidate_count": count,
+                "detail": ("No candidate revision supersedes the current active options baseline."
+                           if count == 0 else f"None of {count} candidate revisions passed the recorded experiment gates.")}
     publication = refresh_options_radar(runtime, candidate_revision_id=selected["id"], config=config,
                                         options_risk_sleeve_capital=settings.options_risk_sleeve_capital, code_version=EXPERIMENT_VERSION)
     staged = []

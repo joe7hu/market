@@ -1389,6 +1389,7 @@ def test_blocked_outcome_history_does_not_hydrate_unusable_snapshots(migrated_po
         assert result["status"] == "blocked"
         assert result["published_count"] == 0
         assert result["blockers"] == ["no_available_trade_plans"]
+        assert result["plan_blockers"] == [plan.primary_blocker]
         assert result["excluded_plan_count"] == 1
         assert "ticker-attribution-decisions" not in cursors
     finally:

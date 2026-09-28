@@ -1656,3 +1656,17 @@ def test_gap_deduplication_keeps_recovered_then_failed_transitions(experiment_co
     history = experiment_history(runtime, observation_id=str(shadow_id), now=base + timedelta(seconds=30))
     assert [event["kind"] for event in history["events"]] == ["entry", "mark_gap", "mark", "mark_gap"]
     assert all(event["net_pnl"] is None for event in history["events"] if event["kind"] == "mark_gap")
+
+
+def test_no_challenger_is_explicit_and_does_not_create_one(experiment_context):
+    runtime, _ingestion, now, _parent, candidate = experiment_context
+    with runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.strategy_revision SET status='superseded' WHERE id=%s", [candidate])
+        before = connection.execute("SELECT count(*) AS count FROM analysis.strategy_revision").fetchone()["count"]
+    result = run_experiments(runtime, typed_config(raw={"analysis": {"options_decision_system": {"strategy_experiment_collection_enabled": True}}}), now=now)
+    assert result["status"] == "skipped"
+    assert result["reason"] == "no_qualified_candidate"
+    assert result["candidate_count"] == 0
+    assert "current active options baseline" in result["detail"]
+    with runtime.read() as connection:
+        assert connection.execute("SELECT count(*) AS count FROM analysis.strategy_revision").fetchone()["count"] == before

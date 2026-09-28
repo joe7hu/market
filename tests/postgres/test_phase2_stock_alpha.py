@@ -1271,3 +1271,32 @@ def test_stock_promotion_clock_is_in_current_snapshot(migrated_postgres_dsn: str
     assert all("promotion_decision_cutoff" in definition for _name, definition in upgraded)
     upgrade_database(migrated_postgres_dsn)
     assert definitions() == upgraded
+
+
+def test_scheduled_overlapping_outcomes_report_missing_pit_controls(migrated_postgres_dsn, monkeypatch):
+    from investment_panel.jobs import stock_alpha_walk_forward as job
+    runtime = _production_runtime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC)
+        observations = _observations(28, cutoff)
+        for index, row in enumerate(observations):
+            row["as_of"] = cutoff - timedelta(days=60) + timedelta(minutes=index)
+            row["feature_available_at"] = row["as_of"] - timedelta(minutes=1)
+            row["outcome_measured_through"] = _window_end(row["as_of"])
+            row["outcome_available_at"] = cutoff - timedelta(days=1)
+        _seed_universe_tape(runtime, cutoff, [row["ticker"] for row in observations])
+        monkeypatch.setattr(job, "load_config", lambda _: typed_config(migrated_postgres_dsn))
+        monkeypatch.setattr(job, "runtime_for_config", lambda _: runtime)
+        monkeypatch.setattr(job, "load_observations", lambda *_args, **_kwargs: observations)
+        result = job.scheduled()
+        assert result["status"] == "skipped"
+        assert result["complete"] is False
+        assert result["reason"] == "repeated_control_observations_unavailable"
+        assert "28 resolved 20-session observations" in result["detail"]
+        assert "randomized-label samples: 0" in result["detail"]
+        assert "white-noise samples: 0" in result["detail"]
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM analysis.strategy_evaluation").fetchone()["count"] == 0
+    finally:
+        runtime.close()

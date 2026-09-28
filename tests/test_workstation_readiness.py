@@ -149,3 +149,14 @@ def test_explicitly_disabled_settlement_stays_visible_as_disabled(monkeypatch):
     projection = worker_projection(None, job="run_continuous_advisor_replay", interval=None, now=NOW, enabled=True)
     assert projection["status"] == "disabled"
     assert projection["next_expected_at"] is None
+
+
+@pytest.mark.parametrize("status", ["skipped", "partial"])
+def test_worker_surfaces_producer_detail_without_claiming_success(status):
+    result = worker_projection({
+        "status": status, "started_at": NOW, "finished_at": NOW,
+        "summary": {"reason": "evidence_missing", "detail": "28 resolved observations; no admissible control samples."},
+    }, job="run_stock_alpha_walk_forward", interval=900, now=NOW, enabled=True)
+    assert result["status"] == status
+    assert result["last_success_at"] is None
+    assert result["reason"] == "28 resolved observations; no admissible control samples."

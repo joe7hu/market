@@ -45,7 +45,7 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
 
     intervals = scheduler.job_intervals()
 
-    assert intervals["update_social_sources"] == 1800
+    assert intervals["update_social_sources"] == 900
     assert intervals["update_research_sources"] == 3600
     assert intervals["update_arco_data"] == 14400
     assert intervals["update_market_data"] == 3600

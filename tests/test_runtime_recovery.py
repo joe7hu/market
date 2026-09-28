@@ -75,3 +75,22 @@ def test_new_resolved_evidence_publishes_despite_other_immature_horizons(monkeyp
     assert symbol_limits == [outcome_job.OUTCOME_BATCH_SIZE]
     assert published == [True]
     assert result["ticker_outcome_attribution"]["status"] == "ok"
+
+
+def test_blocked_attribution_exposes_plan_cause_and_preserves_partial_state(monkeypatch):
+    monkeypatch.setattr(outcome_job, "load_config", lambda _: object())
+    monkeypatch.setattr(outcome_job, "runtime_for_config", lambda _: object())
+    monkeypatch.setattr(outcome_job, "SymbolDecisionOutcomeRepository", lambda _: SimpleNamespace(
+        refresh=lambda **_: {"status": "ok", "resolved": 0},
+    ))
+    monkeypatch.setattr(outcome_job, "TickerDecisionRepository", lambda _: SimpleNamespace(
+        refresh_outcomes=lambda **_: {"evaluated": 1, "updated": 6, "resolved": 1},
+        has_pending_outcome_attributions=lambda: True,
+        publish_outcome_attributions=lambda: {"status": "blocked", "blockers": ["no_available_trade_plans"],
+            "plan_blockers": ["alpha_strategy_revision_missing"]},
+    ))
+    result = outcome_job.run()
+    assert result["status"] == "partial"
+    assert result["source_status"] == "ok"
+    assert result["downstream_status"] == "blocked"
+    assert "alpha strategy revision missing" in result["detail"]

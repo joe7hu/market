@@ -1861,6 +1861,7 @@ class TickerDecisionRepository:
                     "excluded_legacy_count": legacy,
                     "excluded_legacy_reasons": {"trade_plan_missing": legacy} if legacy else {},
                     "blockers": ["no_available_trade_plans"],
+                    "plan_blockers": sorted(inventory["blocked_reasons"] or []),
                     "blockers_by_reason": {"no_available_trade_plans": 1},
                     "paper_only": True, "live_order_submission": False, "paper_orders": 0,
                 }

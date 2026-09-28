@@ -57,6 +57,10 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
         "status": status,
         "source_status": str(symbol_outcomes.get("status") or "ok"),
         "downstream_status": downstream_status,
+        "detail": ("Outcome marks processed; canonical attribution " + attribution_status + ": "
+                   + "; ".join(attribution_result.get("plan_blockers") or attribution_result.get("blockers")
+                               or [str(attribution_result.get("reason") or attribution_status)]).replace("_", " ")
+                   if attribution_status in {"partial", "blocked", "failed", "skipped"} else None),
     }
 
 

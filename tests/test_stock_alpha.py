@@ -353,4 +353,7 @@ def test_scheduled_stock_alpha_skips_when_repeated_controls_are_unavailable(
         "complete": False,
         "observations": 0,
         "control_metadata": {},
+        "detail": ("0 resolved 20-session observations; randomized-label samples: 0; white-noise samples: 0. "
+                   "Controls require training outcomes available before each test decision; "
+                   "overlapping outcome windows cannot supply those samples."),
     }

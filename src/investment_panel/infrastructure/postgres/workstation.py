@@ -98,6 +98,7 @@ def worker_projection(row: dict[str, Any] | None, *, job: str, interval: int | N
     base.update(status="overdue" if overdue else status,
                 reason="Worker heartbeat or next run is overdue." if overdue else
                        "Last run failed; inspect its error in System health." if status == "failed" else
+                       str(summary["detail"]) if status in {"partial", "skipped"} and summary.get("detail") else
                        "Last run was partial; inspect its unresolved stages." if status == "partial" else
                        f"Skipped: {summary_reason}." if status == "skipped" and summary_reason else
                        "Recorded worker state; this does not establish strategy quality.")

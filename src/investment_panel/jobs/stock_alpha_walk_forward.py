@@ -1266,6 +1266,11 @@ def scheduled(config_path: str | None = None) -> dict[str, Any]:
             "complete": False,
             "observations": len(observations),
             "control_metadata": controls.get("control_metadata") or {},
+            "detail": (f"{len(observations)} resolved 20-session observations; "
+                       f"randomized-label samples: {len(controls['randomized_label_returns'])}; "
+                       f"white-noise samples: {len(controls['white_noise_market_returns'])}. "
+                       "Controls require training outcomes available before each test decision; "
+                       "overlapping outcome windows cannot supply those samples."),
         }
     result = run(
         runtime, observations, cutoff=cutoff,
