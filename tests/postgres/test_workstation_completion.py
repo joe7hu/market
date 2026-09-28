@@ -121,6 +121,41 @@ def test_funnel_expands_current_evidence_once_per_decision(runtime, monkeypatch)
     assert 0 < calls.get("expand_decision_resolution", 0) <= 2
 
 
+def test_today_hydrates_manifest_and_resolution_once_per_current_decision(runtime, monkeypatch):
+    from investment_panel.infrastructure.postgres import panel_models
+
+    symbol = "TODAYEXPAND"
+    with runtime.transaction() as connection:
+        reconcile_instrument(connection, symbol)
+    repository = TickerDecisionRepository(runtime)
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    for offset in range(3):
+        reference = cutoff + timedelta(minutes=offset)
+        repository.publish(build_ticker_decision(symbol, {
+            "decision_queue": [{"symbol": symbol, "stance": "NEUTRAL",
+                                "available_at": reference.isoformat()}],
+        }, as_of=reference))
+    original_snapshot = runtime.snapshot
+    calls = {}
+
+    @contextmanager
+    def counted_snapshot(*args, **kwargs):
+        with original_snapshot(*args, **kwargs) as connection:
+            connection.execute("SET LOCAL track_functions = 'all'")
+            yield connection
+            calls.update({row["funcname"]: row["calls"] for row in connection.execute(
+                "SELECT funcname, calls FROM pg_stat_xact_user_functions WHERE schemaname = 'analysis'"
+            )})
+
+    monkeypatch.setattr(runtime, "snapshot", counted_snapshot)
+    monkeypatch.setattr(panel_models, "runtime_for_config", lambda config: runtime)
+    rows = [row for page in panel_models.today_authority_pages(AppConfig()) for row in page]
+    assert len(rows) == 1 and rows[0]["ticker"] == symbol
+    assert calls["expand_decision_resolution"] == 1
+    # The nested resolution call checks an already hydrated manifest with no refs.
+    assert calls["expand_decision_manifest"] <= 2
+
+
 def test_compact_inbox_expands_only_current_decision_evidence(runtime):
     from investment_panel.infrastructure.postgres.panel_models import COMPACT_TICKER_DECISIONS_QUERY
 

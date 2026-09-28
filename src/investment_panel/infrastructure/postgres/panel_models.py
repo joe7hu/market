@@ -1145,33 +1145,22 @@ def today_authority_pages(
                    decision.fundamental, decision.input_hash,
                    decision.opportunity_episode, decision.opportunity_episode_id,
                    decision.policy_version, decision.published_at,
+                   candidate.authority_count,
+                   candidate.opportunity_authority_count, candidate.current_row,
                    analysis.expand_decision_capital(
-                       decision.capital_action,
-                       analysis.expand_decision_resolution(
-                           decision.resolution, today.refs,
-                           today.manifest,
-                           decision.opportunity_episode),
+                       decision.capital_action, resolution.value,
                        today.refs) AS capital_action,
-                   analysis.expand_decision_resolution(
-                       decision.resolution, today.refs,
-                       today.manifest,
-                       decision.opportunity_episode) AS resolution,
+                   resolution.value AS resolution,
                    CASE WHEN today.refs->>'selected_episode' = 'true'
                         THEN decision.opportunity_episode->'selected_expression'
                         ELSE decision.selected_expression END AS selected_expression,
+                   CASE WHEN jsonb_typeof(manifest.value->'opportunity_rank') = 'object'
+                             AND octet_length((manifest.value->'opportunity_rank')::text) <= 196608
+                        THEN (manifest.value->'opportunity_rank') - ARRAY[
+                            'eligible_universe', 'input_lineage', 'utility']
+                   END AS opportunity_rank,
                    jsonb_set(
-                       analysis.expand_decision_manifest(
-                           CASE WHEN EXISTS (
-                               SELECT 1
-                               FROM jsonb_each_text(decision.input_payload_refs) ref
-                               WHERE (SELECT payload.content_hash
-                                      FROM analysis.decision_input_payload payload
-                                      WHERE payload.content_hash = ref.value
-                                      LIMIT 1) IS NULL
-                           ) THEN analysis.expand_decision_inputs(
-                               decision.input_manifest, decision.input_payload_refs)
-                           ELSE today.manifest END,
-                           today.refs, decision.opportunity_episode),
+                       manifest.value - 'opportunity_rank',
                        '{{inputs}}', jsonb_build_object('theses',
                            CASE WHEN decision.input_payload_refs ? 'theses'
                                 THEN analysis.decision_payload(
@@ -1197,6 +1186,19 @@ def today_authority_pages(
                         WHERE payload.content_hash = ref.value LIMIT 1) IS NULL
                  LIMIT 1) AS missing_ref
             ) today
+            CROSS JOIN LATERAL (SELECT analysis.expand_decision_manifest(
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM jsonb_each_text(decision.input_payload_refs) ref
+                    WHERE (SELECT payload.content_hash
+                           FROM analysis.decision_input_payload payload
+                           WHERE payload.content_hash = ref.value LIMIT 1) IS NULL
+                ) THEN analysis.expand_decision_inputs(
+                    decision.input_manifest, decision.input_payload_refs)
+                ELSE today.manifest END,
+                today.refs, decision.opportunity_episode) AS value OFFSET 0) manifest
+            CROSS JOIN LATERAL (SELECT analysis.expand_decision_resolution(
+                decision.resolution, today.refs - 'manifest',
+                manifest.value, decision.opportunity_episode) AS value OFFSET 0) resolution
             WHERE candidate.current_row = 1
               AND candidate.authority_count = 1
               AND candidate.opportunity_authority_count = 1
@@ -1215,17 +1217,7 @@ def today_authority_pages(
                    decision.policy_version, decision.opportunity_episode_id,
                    CASE WHEN octet_length(decision.selected_expression::text) <= 8192
                         THEN decision.selected_expression END AS selected_expression,
-                   CASE
-                       WHEN jsonb_typeof(
-                                decision.input_manifest->'opportunity_rank'
-                            ) = 'object'
-                        AND octet_length((
-                                decision.input_manifest->'opportunity_rank'
-                            )::text) <= 196608
-                       THEN (decision.input_manifest->'opportunity_rank') - ARRAY[
-                           'eligible_universe', 'input_lineage', 'utility'
-                       ]
-                   END AS opportunity_rank,
+                   decision.opportunity_rank,
                    COALESCE(
                        jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
                        AND octet_length((
@@ -1234,16 +1226,15 @@ def today_authority_pages(
                        false
                    ) AS trade_plan_present,
                    decision.created_at,
-                   candidate.authority_count,
-                   candidate.opportunity_authority_count,
-                   candidate.current_row
+                   decision.authority_count,
+                   decision.opportunity_authority_count,
+                   decision.current_row
             FROM current_decision_payload decision
-            JOIN candidate_keys candidate ON candidate.id = decision.id
-            JOIN catalog.instrument instrument
-              ON instrument.id = decision.instrument_id
-            WHERE candidate.current_row = 1
-              AND candidate.authority_count = 1
-              AND candidate.opportunity_authority_count = 1
+            CROSS JOIN LATERAL (SELECT instrument.symbol FROM catalog.instrument instrument
+                WHERE instrument.id = decision.instrument_id OFFSET 0) instrument
+            WHERE decision.current_row = 1
+              AND decision.authority_count = 1
+              AND decision.opportunity_authority_count = 1
               AND jsonb_typeof(decision.capital_action) = 'object'
               AND jsonb_typeof(decision.input_manifest) = 'object'
         ), current_authority AS (

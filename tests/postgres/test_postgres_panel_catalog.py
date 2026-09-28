@@ -847,7 +847,6 @@ def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
     # Keep the broad candidate scan on compact rows; expand only selected authority rows.
     assert all("FROM analysis.ticker_decision decision" in query for query in queries)
     assert all(query.count("current_decision_payload stored_decision") == 2 for query in queries)
-    assert all("JOIN candidate_keys candidate ON candidate.id = decision.id" in query for query in queries)
     assert all("FROM analysis.ticker_decision_read" not in query for query in queries)
     assert all("FROM current_decision_payload decision" in query for query in queries)
     assert all(
