@@ -876,6 +876,28 @@ def test_option_archive_resume_does_not_rescan_quote_history(storage, monkeypatc
     assert max(scans, default=0) == 0
 
 
+def test_option_archive_frontier_does_not_reuse_a_prepared_generic_plan(storage, monkeypatch):
+    now, decision_id = _completed_option_scan(storage)
+    original_read = storage.runtime.read
+    prepared = []
+
+    @contextmanager
+    def inspect_prepared_plans(*args, **kwargs):
+        with original_read(*args, **kwargs) as connection:
+            connection.prepare_threshold = 0
+            yield connection
+            prepared.extend(connection.execute("""
+                SELECT name, generic_plans, custom_plans FROM pg_prepared_statements
+                WHERE statement LIKE '%%newer.input_cutoff > run.input_cutoff%%'
+            """, prepare=False).fetchall())
+
+    monkeypatch.setattr(storage.runtime, "read", inspect_prepared_plans)
+    archive = OptionEvidenceArchive(storage)
+    for _ in range(12):
+        assert archive.run(now=now)["decision_ids"] == [str(decision_id)]
+    assert prepared == []
+
+
 def test_completed_option_scan_archives_dependencies_and_restores_typed_rows(storage, migrated_postgres_dsn):
     now, decision_id = _completed_option_scan(storage)
     archive = OptionEvidenceArchive(storage)
@@ -1677,8 +1699,8 @@ def test_option_archive_rechecks_successor_after_decision_lane_changes(storage, 
     def change_lane_after_selection(profile=None):
         with original_transaction(profile) as connection:
             class ConnectionProxy:
-                def execute(self, query, params=None):
-                    result = connection.execute(query, params)
+                def execute(self, query, params=None, **kwargs):
+                    result = connection.execute(query, params, **kwargs)
                     if "AND (decision.as_of, decision.id) >" in query:
                         with original_transaction() as writer:
                             writer.execute("UPDATE analysis.decision SET lane = 'changed_lane' WHERE id = %s", [decision_id])
@@ -1715,8 +1737,8 @@ def test_option_archive_holds_successor_lock_through_compaction(storage, monkeyp
     def pause_after_recheck(profile=None):
         with original_transaction(profile) as connection:
             class ConnectionProxy:
-                def execute(self, query, params=None):
-                    result = connection.execute(query, params)
+                def execute(self, query, params=None, **kwargs):
+                    result = connection.execute(query, params, **kwargs)
                     if isinstance(query, str) and "FOR UPDATE OF newer, successor" in query:
                         rechecked.set()
                         assert resume.wait(10)

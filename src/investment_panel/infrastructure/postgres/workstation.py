@@ -338,7 +338,8 @@ class WorkstationRepository:
                 ORDER BY (revision.status = 'active') DESC, evaluation.evaluated_at DESC LIMIT 40
             """, [now, now, now])
         try:
-            collection = experiment_progress(self.runtime, now=now)
+            # Worker checks can commit between the two live snapshots.
+            collection = experiment_progress(self.runtime, now=datetime.now(UTC))
         except Exception:
             logger.exception("Experiment management health read failed")
             failures.append("experiment_progress")

@@ -1490,6 +1490,51 @@ def test_funded_paper_account_stages_without_broker_cash(experiment_context, app
         application.close()
 
 
+@pytest.mark.parametrize("check_offset", [1, 60])
+def test_workstation_liveness_uses_its_read_clock_after_worker_commit(experiment_context, monkeypatch, check_offset):
+    from contextlib import contextmanager
+    from investment_panel.infrastructure.postgres import workstation
+    from investment_panel.infrastructure.postgres.experiment_events import experiment_progress
+    from investment_panel.settings import AppConfig
+
+    runtime, ingestion, now, _parent, _candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    published = refresh_options_radar(runtime, source_id="test-experiment", code_version="health-clock-test")
+    assert published["shadow_trades"] == 1
+    now = datetime.now(UTC)
+    original_snapshot = runtime.snapshot
+    state = {"snapshots": 0, "committed": False}
+
+    class Clock:
+        @staticmethod
+        def now(_zone):
+            return now + timedelta(seconds=2 if state["committed"] else 0)
+
+    @contextmanager
+    def worker_commits_after_workstation_snapshot(*args, **kwargs):
+        state["snapshots"] += 1
+        first = state["snapshots"] == 1
+        with original_snapshot(*args, **kwargs) as connection:
+            yield connection
+        if first:
+            with runtime.transaction() as connection:
+                connection.execute("""
+                    UPDATE analysis.shadow_trade SET metrics = metrics || %s
+                    WHERE source_kind = 'options_paper_experiment'
+                """, [Jsonb({"last_checked_at": (now + timedelta(seconds=check_offset)).isoformat()})])
+            state["committed"] = True
+
+    monkeypatch.setattr(workstation, "datetime", Clock)
+    monkeypatch.setattr(runtime, "snapshot", worker_commits_after_workstation_snapshot)
+    result = workstation.WorkstationRepository(runtime).status(AppConfig())
+    assert result["observations"]["collection"]["active"] == 1
+    management = [row for row in result["observations"]["collection"]["incidents"]
+                  if row["reason"] == "experiment_management_overdue"]
+    assert bool(management) == (check_offset > 2)
+    historical = experiment_progress(runtime, now=now)
+    assert any(row["reason"] == "experiment_management_overdue" for row in historical["incidents"])
+
+
 def test_experiment_event_journal_follows_real_worker_entry_marks_exit_and_not_account_nav(experiment_context, application_postgres_dsn):
     from investment_panel.infrastructure.postgres.experiment_events import experiment_history, record_experiment_event, experiment_progress
     from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository

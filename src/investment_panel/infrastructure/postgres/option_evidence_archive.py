@@ -73,6 +73,7 @@ class OptionEvidenceArchive:
                                else connection.execute(
                                    "SELECT min(observed_at) AS observed_at FROM raw.option_quote"
                                ).fetchone()["observed_at"])
+                # Cursor predicates need a new plan as the frontier moves.
                 rows = connection.execute("""
                     SELECT scan.decision_id, decision.as_of, decision.run_id,
                            scan.snapshot_id, scan.contract_id, scan.quote_observed_at,
@@ -123,7 +124,7 @@ class OptionEvidenceArchive:
                       datetime.fromisoformat(cursor["as_of"]) if cursor.get("as_of")
                       else datetime.min.replace(tzinfo=UTC),
                       cursor.get("decision_id") or "00000000-0000-0000-0000-000000000000",
-                      batch_size]).fetchall()
+                      batch_size], prepare=False).fetchall()
                 if not rows:
                     remaining = connection.execute("""
                         SELECT scan.decision_id,
