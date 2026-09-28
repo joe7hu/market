@@ -68,17 +68,24 @@ class OptionEvidenceArchive:
                     [CHECKPOINT],
                 ).fetchone()
                 cursor = dict(saved["cursor"] or {}) if saved else {}
+                # The saved frontier avoids rescanning retained quote history each batch.
+                quote_floor = (datetime.fromisoformat(cursor["as_of"]) if cursor.get("as_of")
+                               else connection.execute(
+                                   "SELECT min(observed_at) AS observed_at FROM raw.option_quote"
+                               ).fetchone()["observed_at"])
                 rows = connection.execute("""
                     SELECT scan.decision_id, decision.as_of, decision.run_id,
                            scan.snapshot_id, scan.contract_id, scan.quote_observed_at,
                            scan.relative_value_id, scan.synthetic_legs,
                            scan.primary_decision_id
                     FROM analysis.decision decision
-                    JOIN analysis.option_decision scan ON scan.decision_id = decision.id
+                    JOIN LATERAL (
+                        SELECT * FROM analysis.option_decision
+                        WHERE decision_id = decision.id OFFSET 0
+                    ) scan ON true
                     JOIN analysis.run run ON run.id = decision.run_id
                     WHERE decision.kind = 'option' AND decision.as_of < %s
-                      -- ponytail: This quote floor scans partitions; index observed_at if it reaches the 30s maintenance limit.
-                      AND decision.as_of >= (SELECT min(observed_at) FROM raw.option_quote)
+                      AND decision.as_of >= %s
                       AND decision.as_of >= scan.quote_observed_at
                       AND scan.evidence_state = 'local' AND run.status = 'succeeded'
                       AND EXISTS (SELECT 1 FROM raw.option_quote quote
@@ -112,7 +119,7 @@ class OptionEvidenceArchive:
                                         AND task.status NOT IN
                                           ('succeeded', 'completed', 'failed', 'cancelled'))
                     ORDER BY decision.as_of, decision.id LIMIT %s
-                """, [reference - timedelta(days=30),
+                """, [reference - timedelta(days=30), quote_floor,
                       datetime.fromisoformat(cursor["as_of"]) if cursor.get("as_of")
                       else datetime.min.replace(tzinfo=UTC),
                       cursor.get("decision_id") or "00000000-0000-0000-0000-000000000000",

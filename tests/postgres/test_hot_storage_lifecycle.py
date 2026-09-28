@@ -844,6 +844,38 @@ def test_ticker_compact_history_and_current_decision_work_without_nas(storage, m
         offline.rename(storage.archive_root)
 
 
+def test_option_archive_resume_does_not_rescan_quote_history(storage, monkeypatch):
+    now, decision_id = _completed_option_scan(storage)
+    archive = OptionEvidenceArchive(storage)
+    with storage.runtime.transaction() as connection:
+        reference = connection.execute(
+            "SELECT as_of FROM analysis.decision WHERE id = %s", [decision_id]
+        ).fetchone()["as_of"]
+        archive._checkpoint(connection, {
+            "as_of": reference.isoformat(),
+            "decision_id": "00000000-0000-0000-0000-000000000000",
+        }, 0, "running")
+    original_read = storage.runtime.read
+    scans = []
+
+    @contextmanager
+    def counted_read(*args, **kwargs):
+        with original_read(*args, **kwargs) as connection:
+            before = connection.execute("""SELECT COALESCE(sum(seq_scan), 0) AS n
+                FROM pg_stat_xact_all_tables
+                WHERE schemaname = 'raw' AND relname LIKE 'option_quote_%'""").fetchone()["n"]
+            yield connection
+            after = connection.execute("""SELECT COALESCE(sum(seq_scan), 0) AS n
+                FROM pg_stat_xact_all_tables
+                WHERE schemaname = 'raw' AND relname LIKE 'option_quote_%'""").fetchone()["n"]
+            scans.append(after - before)
+
+    monkeypatch.setattr(storage.runtime, "read", counted_read)
+    result = archive.run(now=now)
+    assert result["decision_ids"] == [str(decision_id)]
+    assert max(scans, default=0) == 0
+
+
 def test_completed_option_scan_archives_dependencies_and_restores_typed_rows(storage, migrated_postgres_dsn):
     now, decision_id = _completed_option_scan(storage)
     archive = OptionEvidenceArchive(storage)
@@ -1647,7 +1679,7 @@ def test_option_archive_rechecks_successor_after_decision_lane_changes(storage, 
             class ConnectionProxy:
                 def execute(self, query, params=None):
                     result = connection.execute(query, params)
-                    if "decision.as_of >= (SELECT min(observed_at)" in query:
+                    if "AND (decision.as_of, decision.id) >" in query:
                         with original_transaction() as writer:
                             writer.execute("UPDATE analysis.decision SET lane = 'changed_lane' WHERE id = %s", [decision_id])
                     return result
