@@ -73,7 +73,8 @@ def test_outcome_refresh_includes_ticker_learning_without_staging_orders(monkeyp
         def __init__(self, received_runtime):
             assert received_runtime is runtime
 
-        def refresh(self):
+        def refresh(self, *, limit):
+            assert limit == 25
             return {"evaluated": 2, "resolved": 1}
 
     class FakeTickerRepository:
@@ -123,7 +124,8 @@ def test_outcome_refresh_skips_global_attribution_without_new_resolutions(monkey
         def __init__(self, received_runtime):
             assert received_runtime is runtime
 
-        def refresh(self):
+        def refresh(self, *, limit):
+            assert limit == 25
             return {"status": "ok", "evaluated": 0, "resolved": 0}
 
     class FakeTickerRepository:
@@ -163,7 +165,7 @@ def test_outcome_refresh_keeps_a_blocked_attribution_visible(monkeypatch) -> Non
     monkeypatch.setattr(
         refresh_jobs.refresh_symbol_decision_outcomes,
         "SymbolDecisionOutcomeRepository",
-        lambda _runtime: SimpleNamespace(refresh=lambda: {"status": "ok"}),
+        lambda _runtime: SimpleNamespace(refresh=lambda **_: {"status": "ok"}),
     )
     monkeypatch.setattr(
         refresh_jobs.refresh_symbol_decision_outcomes,

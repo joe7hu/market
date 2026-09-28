@@ -237,7 +237,10 @@ class WorkstationRepository:
                             ) THEN analysis.expand_decision_inputs(
                                 decision.input_manifest, decision.input_payload_refs)
                             ELSE decision.input_manifest - 'inputs' END,
-                            decision.evidence_refs, decision.opportunity_episode) AS manifest
+                            jsonb_set(decision.evidence_refs, '{manifest}',
+                                COALESCE(decision.evidence_refs->'manifest', '{}'::jsonb)
+                                  - ARRAY['instrument_state_snapshot', 'alpha_signals']),
+                            decision.opportunity_episode) AS manifest
                         OFFSET 0
                     ) evidence
                 ) decision ON true

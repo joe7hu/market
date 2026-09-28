@@ -121,6 +121,129 @@ def test_funnel_expands_current_evidence_once_per_decision(runtime, monkeypatch)
     assert 0 < calls.get("expand_decision_resolution", 0) <= 2
 
 
+def test_compact_inbox_expands_only_current_decision_evidence(runtime):
+    from investment_panel.infrastructure.postgres.panel_models import COMPACT_TICKER_DECISIONS_QUERY
+
+    symbol = "INBOXREF"
+    with runtime.transaction() as connection:
+        reconcile_instrument(connection, symbol)
+    repository = TickerDecisionRepository(runtime)
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    for offset in range(3):
+        reference = cutoff + timedelta(minutes=offset)
+        repository.publish(build_ticker_decision(symbol, {
+            "decision_queue": [{"symbol": symbol, "stance": "NEUTRAL",
+                                "available_at": reference.isoformat()}],
+        }, as_of=reference))
+    with runtime.read() as connection:
+        connection.execute("SET LOCAL track_functions = 'all'")
+        rows = connection.execute(COMPACT_TICKER_DECISIONS_QUERY).fetchall()
+        calls = {row["funcname"]: row["calls"] for row in connection.execute(
+            "SELECT funcname, calls FROM pg_stat_xact_user_functions WHERE schemaname = 'analysis'"
+        )}
+    assert len(rows) == 1
+    assert rows[0]["as_of"] == cutoff + timedelta(minutes=2)
+    assert rows[0]["input_manifest"]["opportunity_rank"] is None
+    assert 0 < calls.get("expand_decision_manifest", 0) <= 4
+
+
+def test_health_does_not_read_unused_instrument_snapshot(runtime, monkeypatch):
+    symbol = "HEALTHCOMPACT"
+    with runtime.transaction() as connection:
+        reconcile_instrument(connection, symbol)
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    decision = TickerDecisionRepository(runtime).publish(build_ticker_decision(symbol, {
+        "decision_queue": [{"symbol": symbol, "stance": "NEUTRAL",
+                            "available_at": cutoff.isoformat()}],
+    }, as_of=cutoff))
+    with runtime.transaction() as connection:
+        connection.execute("""
+            UPDATE analysis.ticker_decision SET input_manifest = input_manifest - 'instrument_state_snapshot',
+              evidence_refs = jsonb_set(evidence_refs,
+              '{manifest}', COALESCE(evidence_refs->'manifest', '{}') || jsonb_build_object(
+                'instrument_state_snapshot', analysis.intern_decision_payload('{"unused":true}')))
+            WHERE id = %s::uuid
+        """, [decision["ticker_decision_id"]])
+    original_snapshot = runtime.snapshot
+    calls = {}
+
+    @contextmanager
+    def counted_snapshot(*args, **kwargs):
+        with original_snapshot(*args, **kwargs) as connection:
+            connection.execute("SET LOCAL track_functions = 'all'")
+            yield connection
+            calls.update({row["funcname"]: row["calls"] for row in connection.execute(
+                "SELECT funcname, calls FROM pg_stat_xact_user_functions WHERE schemaname = 'analysis'"
+            )})
+
+    monkeypatch.setattr(runtime, "snapshot", counted_snapshot)
+    result = WorkstationRepository(runtime).status(AppConfig(watchlist=[{"symbol": symbol}]))
+    assert result["failed_reads"] == []
+    assert calls.get("decision_payload", 0) == 1  # reference signal; this decision has no trade plan
+
+
+def test_attribution_does_not_expand_planless_history(runtime):
+    from investment_panel.infrastructure.postgres.ticker_decisions import OUTCOME_ATTRIBUTION_DECISION_QUERY
+
+    symbol = "PLANLESSREF"
+    with runtime.transaction() as connection:
+        reconcile_instrument(connection, symbol)
+    repository = TickerDecisionRepository(runtime)
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    for offset in range(3):
+        reference = cutoff + timedelta(minutes=offset)
+        repository.publish(build_ticker_decision(symbol, {
+            "decision_queue": [{"symbol": symbol, "stance": "NEUTRAL",
+                                "available_at": reference.isoformat()}],
+        }, as_of=reference))
+    with runtime.read() as connection:
+        connection.execute("SET LOCAL track_functions = 'all'")
+        rows = connection.execute(OUTCOME_ATTRIBUTION_DECISION_QUERY, [datetime.now(UTC)]).fetchall()
+        calls = {row["funcname"]: row["calls"] for row in connection.execute(
+            "SELECT funcname, calls FROM pg_stat_xact_user_functions WHERE schemaname = 'analysis'"
+        )}
+    assert rows == []
+    assert calls.get("expand_decision_manifest", 0) == 0
+
+
+def test_attribution_does_not_read_unused_snapshot_payloads(runtime):
+    from investment_panel.infrastructure.postgres.ticker_decisions import OUTCOME_ATTRIBUTION_DECISION_QUERY
+
+    with runtime.transaction() as connection:
+        instrument = reconcile_instrument(connection, "ATTRCOMPACT")
+        connection.execute("""
+            INSERT INTO analysis.ticker_decision (instrument_id, decision_revision,
+              contract_version, as_of, input_hash, code_version, experiment_id,
+              tactical, fundamental, capital_action, risk_policy, input_manifest, evidence_refs)
+            VALUES (%s, 'compact', 'test', now() - interval '1 hour', %s,
+              'test', 'test', '{}', '{}', '{}', '{}', '{}',
+              jsonb_build_object('resolution_plan_fields', jsonb_build_array('trade_plan_id'),
+                'manifest', jsonb_build_object(
+                'trade_plan', analysis.intern_decision_payload('{"id":"compact","trade_plan_id":"compact"}'),
+                'instrument_state_snapshot', analysis.intern_decision_payload('{"unused":true}'),
+                'reference_signal', analysis.intern_decision_payload('{"unused":true}'))))
+        """, [instrument, "f" * 64])
+    with runtime.read() as connection:
+        connection.execute("SET LOCAL track_functions = 'all'")
+        rows = connection.execute(OUTCOME_ATTRIBUTION_DECISION_QUERY, [datetime.now(UTC)]).fetchall()
+        calls = {row["funcname"]: row["calls"] for row in connection.execute(
+            "SELECT funcname, calls FROM pg_stat_xact_user_functions WHERE schemaname = 'analysis'"
+        )}
+    assert len(rows) == 1
+    assert rows[0]["input_manifest"]["trade_plan"] == {"id": "compact", "trade_plan_id": "compact"}
+    assert rows[0]["resolution"]["trade_plan_id"] == "compact"
+    assert calls.get("decision_payload", 0) == 2
+    with runtime.read() as connection:
+        plan = connection.execute("EXPLAIN (VERBOSE, FORMAT JSON) " + OUTCOME_ATTRIBUTION_DECISION_QUERY,
+                                  [datetime.now(UTC)]).fetchone()["QUERY PLAN"][0]["Plan"]
+    def assert_sort_before_expansion(node):
+        if node["Node Type"] == "Sort":
+            assert "expand_decision" not in str(node.get("Output", []))
+        for child in node.get("Plans", []):
+            assert_sort_before_expansion(child)
+    assert_sort_before_expansion(plan)
+
+
 def test_unpriceable_experiment_mark_does_not_call_a_healthy_worker_down():
     incidents = [
         {"reason": "experiment_quote_overdue", "job": "refresh_paper_quotes"},

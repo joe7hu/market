@@ -60,10 +60,11 @@ def test_critical_dispatch_runs_while_long_priority_work_waits(monkeypatch):
 
 def test_new_resolved_evidence_publishes_despite_other_immature_horizons(monkeypatch):
     published = []
+    symbol_limits = []
     monkeypatch.setattr(outcome_job, "load_config", lambda _: object())
     monkeypatch.setattr(outcome_job, "runtime_for_config", lambda _: object())
     monkeypatch.setattr(outcome_job, "SymbolDecisionOutcomeRepository", lambda _: SimpleNamespace(
-        refresh=lambda: {"status": "ok", "resolved": 0},
+        refresh=lambda **kwargs: symbol_limits.append(kwargs.get("limit")) or {"status": "ok", "resolved": 0},
     ))
     monkeypatch.setattr(outcome_job, "TickerDecisionRepository", lambda _: SimpleNamespace(
         refresh_outcomes=lambda **_: {"evaluated": 1, "updated": 6, "resolved": 1},
@@ -71,5 +72,6 @@ def test_new_resolved_evidence_publishes_despite_other_immature_horizons(monkeyp
         publish_outcome_attributions=lambda: published.append(True) or {"status": "ok"},
     ))
     result = outcome_job.run()
+    assert symbol_limits == [outcome_job.OUTCOME_BATCH_SIZE]
     assert published == [True]
     assert result["ticker_outcome_attribution"]["status"] == "ok"

@@ -60,7 +60,37 @@ RESEARCH_PACKETS_BASE_QUERY = """
 # The Inbox only needs the fields used by plan_authority. Full immutable
 # decision evidence can contain multi-megabyte market and input snapshots.
 COMPACT_TICKER_DECISIONS_QUERY = """
-    WITH current_candidates AS (
+    WITH candidate_keys AS MATERIALIZED (
+        SELECT decision.id,
+               count(*) OVER (
+                   PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
+               ) AS authority_count,
+               count(*) OVER (
+                   PARTITION BY decision.opportunity_episode_id
+               ) AS opportunity_authority_count,
+               row_number() OVER (
+                   PARTITION BY decision.instrument_id
+                   ORDER BY decision.as_of DESC, decision.published_at DESC,
+                            decision.created_at DESC, decision.id DESC
+               ) AS current_row
+        FROM analysis.ticker_decision decision
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        WHERE decision.status = 'published'
+          AND decision.contract_version = 'ticker-decision.v1'
+          AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
+          AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
+          AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+          AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
+          AND decision.as_of <= now()
+          AND decision.published_at IS NOT NULL
+          AND decision.published_at <= now()
+          AND jsonb_typeof(decision.tactical) = 'object'
+          AND jsonb_typeof(decision.fundamental) = 'object'
+          AND jsonb_typeof(decision.capital_action) = 'object'
+          AND jsonb_typeof(decision.risk_policy) = 'object'
+          AND jsonb_typeof(decision.expressions) = 'object'
+          AND jsonb_typeof(decision.input_manifest) = 'object'
+    ), current_candidates AS (
         SELECT decision.id::text AS ticker_decision_id,
                instrument.symbol AS ticker, instrument.symbol,
                decision.decision_revision, decision.contract_version,
@@ -79,11 +109,11 @@ COMPACT_TICKER_DECISIONS_QUERY = """
                    'experiment_id', decision.experiment_id,
                    'inputs', jsonb_build_object(
                        COALESCE(
-                           decision.input_manifest->'trade_plan'->'input_lineage'->0->>'field',
+                           manifest.input_manifest->'trade_plan'->'input_lineage'->0->>'field',
                            'decision'
                        ),
                        jsonb_build_array(COALESCE(
-                           decision.input_manifest->'trade_plan'->'input_lineage'->0,
+                           manifest.input_manifest->'trade_plan'->'input_lineage'->0,
                            jsonb_build_object(
                                'field', 'decision',
                                'source_id', 'postgresql',
@@ -92,8 +122,8 @@ COMPACT_TICKER_DECISIONS_QUERY = """
                            )
                        ))
                    ),
-                   'source_versions', COALESCE(decision.input_manifest->'source_versions', '{}'::jsonb),
-                   'signal_declarations', COALESCE(decision.input_manifest->'signal_declarations', '[]'::jsonb),
+                   'source_versions', COALESCE(manifest.input_manifest->'source_versions', '{}'::jsonb),
+                   'signal_declarations', COALESCE(manifest.input_manifest->'signal_declarations', '[]'::jsonb),
                    'alpha_signals', COALESCE((
                        SELECT jsonb_agg(jsonb_build_object(
                            'signal_id', signal->'signal_id',
@@ -101,23 +131,23 @@ COMPACT_TICKER_DECISIONS_QUERY = """
                            'strategy_forecast_id', signal->'strategy_forecast_id'
                        ))
                        FROM jsonb_array_elements(
-                           COALESCE(decision.input_manifest->'alpha_signals', '[]'::jsonb)
+                           COALESCE(manifest.input_manifest->'alpha_signals', '[]'::jsonb)
                        ) AS signal
-                       WHERE signal->>'signal_id' = decision.input_manifest->'trade_plan'->>'alpha_signal_id'
+                       WHERE signal->>'signal_id' = manifest.input_manifest->'trade_plan'->>'alpha_signal_id'
                    ), '[]'::jsonb),
-                   'opportunity_rank', COALESCE(
-                       (decision.input_manifest->'opportunity_rank') - 'input_lineage'::text,
-                       '{}'::jsonb
-                   ),
-                   'trade_plan', COALESCE(decision.input_manifest->'trade_plan', '{}'::jsonb)
+                   'opportunity_rank', CASE WHEN jsonb_typeof(manifest.input_manifest->'opportunity_rank') = 'object'
+                        THEN (manifest.input_manifest->'opportunity_rank') - 'input_lineage'::text
+                        ELSE COALESCE(manifest.input_manifest->'opportunity_rank', '{}'::jsonb)
+                   END,
+                   'trade_plan', COALESCE(manifest.input_manifest->'trade_plan', '{}'::jsonb)
                ) AS input_manifest,
                decision.market_state_publication_id::text,
                jsonb_build_object(
                    'snapshot_id', COALESCE(
-                       decision.input_manifest->'trade_plan'->>'market_snapshot_id',
+                       manifest.input_manifest->'trade_plan'->>'market_snapshot_id',
                        'compact-inbox:' || decision.id::text
                    ),
-                   'publication_id', decision.input_manifest->'trade_plan'->>'market_state_publication_id',
+                   'publication_id', manifest.input_manifest->'trade_plan'->>'market_state_publication_id',
                    'as_of', decision.as_of,
                    'input_cutoff', decision.as_of,
                    'availability', 'unavailable',
@@ -126,34 +156,15 @@ COMPACT_TICKER_DECISIONS_QUERY = """
                '{}'::jsonb AS portfolio_impacts,
                NULL::jsonb AS risk_policy_snapshot,
                decision.status, decision.created_at,
-               count(*) OVER (
-                   PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
-               ) AS authority_count,
-               count(*) OVER (
-                   PARTITION BY decision.opportunity_episode_id
-               ) AS opportunity_authority_count,
-               row_number() OVER (
-                   PARTITION BY decision.instrument_id
-                   ORDER BY decision.as_of DESC, decision.published_at DESC,
-                            decision.created_at DESC, decision.id DESC
-               ) AS current_row
-        FROM analysis.ticker_decision_read decision
+               candidate.authority_count,
+               candidate.opportunity_authority_count, candidate.current_row
+        FROM candidate_keys candidate
+        JOIN analysis.ticker_decision_read decision ON decision.id = candidate.id
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-        WHERE decision.status = 'published'
-          AND decision.contract_version = 'ticker-decision.v1'
-          AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
-          AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
-          AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
-          AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
-          AND decision.as_of <= now()
-          AND decision.published_at IS NOT NULL
-          AND decision.published_at <= now()
-          AND jsonb_typeof(decision.tactical) = 'object'
-          AND jsonb_typeof(decision.fundamental) = 'object'
-          AND jsonb_typeof(decision.capital_action) = 'object'
-          AND jsonb_typeof(decision.risk_policy) = 'object'
-          AND jsonb_typeof(decision.expressions) = 'object'
-          AND jsonb_typeof(decision.input_manifest) = 'object'
+        CROSS JOIN LATERAL (SELECT decision.input_manifest OFFSET 0) manifest
+        WHERE candidate.current_row = 1
+          AND candidate.authority_count = 1
+          AND candidate.opportunity_authority_count = 1
     )
     SELECT ticker_decision_id, ticker, symbol,
            decision_revision, contract_version,

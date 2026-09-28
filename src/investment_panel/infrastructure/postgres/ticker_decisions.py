@@ -134,15 +134,23 @@ def semantic_decision_fingerprint(decision: TickerDecision) -> str:
 # snapshots. Keep this projection bounded while retaining every historical
 # decision that can own an outcome.
 OUTCOME_ATTRIBUTION_DECISION_QUERY = """
-    WITH decisions AS (
-        SELECT decision.id::text AS decision_id, instrument.symbol AS ticker,
+    WITH plan_candidates AS MATERIALIZED (
+        SELECT decision.id, decision.as_of
+        FROM analysis.ticker_decision decision
+        WHERE decision.status IN ('published', 'superseded')
+          AND decision.as_of <= %s
+          AND (CASE WHEN decision.evidence_refs->'manifest' ? 'trade_plan'
+                    THEN jsonb_typeof(analysis.decision_payload(
+                        decision.evidence_refs #>> '{manifest,trade_plan}'))
+                    ELSE jsonb_typeof(decision.input_manifest->'trade_plan')
+               END) = 'object'
+    ), decisions AS (
+        SELECT keys.decision_id, instrument.symbol AS ticker,
                decision.decision_revision, decision.contract_version,
-               decision.as_of, decision.tactical, decision.fundamental,
+               keys.as_of, decision.tactical, decision.fundamental,
                analysis.expand_decision_capital(decision.capital_action,
-                 analysis.expand_decision_resolution(decision.resolution, decision.evidence_refs,
-                   decision.input_manifest, decision.opportunity_episode), decision.evidence_refs) AS capital_action,
-               analysis.expand_decision_resolution(decision.resolution, decision.evidence_refs,
-                 decision.input_manifest, decision.opportunity_episode) AS resolution,
+                 resolution.value, decision.evidence_refs) AS capital_action,
+               resolution.value AS resolution,
                decision.policy_version, decision.opportunity_episode_id,
                decision.opportunity_cutoff, decision.risk_policy,
                CASE WHEN decision.evidence_refs->>'expressions_episode' = 'true'
@@ -177,10 +185,11 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                        ) AS signal
                        WHERE signal->>'signal_id' = manifest.value->'trade_plan'->>'alpha_signal_id'
                    ), '[]'::jsonb),
-                   'opportunity_rank', COALESCE(
-                       (manifest.value->'opportunity_rank') - 'input_lineage'::text,
-                       '{}'::jsonb
-                   ),
+                   'opportunity_rank', CASE
+                       WHEN jsonb_typeof(manifest.value->'opportunity_rank') = 'object'
+                       THEN (manifest.value->'opportunity_rank') - 'input_lineage'::text
+                       ELSE COALESCE(manifest.value->'opportunity_rank', '{}'::jsonb)
+                   END,
                    'trade_plan', COALESCE(manifest.value->'trade_plan', '{}'::jsonb)
                ) AS input_manifest,
                decision.market_state_publication_id::text,
@@ -198,15 +207,23 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                '{}'::jsonb AS portfolio_impacts,
                NULL::jsonb AS risk_policy_snapshot,
                decision.opportunity_episode
-        FROM analysis.ticker_decision decision
+        FROM (SELECT id, as_of, id::text AS decision_id FROM plan_candidates
+            ORDER BY as_of, decision_id OFFSET 0) keys
+        CROSS JOIN LATERAL (SELECT decision.* FROM analysis.ticker_decision decision
+            WHERE decision.id = keys.id OFFSET 0) decision
+        CROSS JOIN LATERAL (SELECT instrument.symbol FROM catalog.instrument instrument
+            WHERE instrument.id = decision.instrument_id OFFSET 0) instrument
+        CROSS JOIN LATERAL (SELECT jsonb_set(decision.evidence_refs, '{manifest}',
+            COALESCE(decision.evidence_refs->'manifest', '{}'::jsonb)
+              - ARRAY['instrument_state_snapshot', 'reference_signal']) AS value) attribution_refs
         CROSS JOIN LATERAL (SELECT analysis.expand_decision_manifest(
-            decision.input_manifest, decision.evidence_refs, decision.opportunity_episode) AS value
+            decision.input_manifest, attribution_refs.value, decision.opportunity_episode) AS value
             OFFSET 0) manifest
-        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-        WHERE decision.status IN ('published', 'superseded')
-          AND decision.as_of <= %s
-          AND jsonb_typeof(manifest.value->'trade_plan') = 'object'
-        OFFSET 0
+        CROSS JOIN LATERAL (SELECT analysis.expand_decision_resolution(
+            decision.resolution, attribution_refs.value - 'manifest',
+            jsonb_build_object('trade_plan', manifest.value->'trade_plan'),
+            decision.opportunity_episode) AS value OFFSET 0) resolution
+        WHERE jsonb_typeof(manifest.value->'trade_plan') = 'object'
     )
     SELECT decisions.*
     FROM decisions

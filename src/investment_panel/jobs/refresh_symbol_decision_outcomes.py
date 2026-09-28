@@ -17,7 +17,7 @@ OUTCOME_BATCH_SIZE = 25
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     config = load_config(config_path)
     runtime = runtime_for_config(config)
-    symbol_outcomes = SymbolDecisionOutcomeRepository(runtime).refresh()
+    symbol_outcomes = SymbolDecisionOutcomeRepository(runtime).refresh(limit=OUTCOME_BATCH_SIZE)
     ticker_repository = TickerDecisionRepository(runtime)
     # Each ticker has six horizon writes. Keep the pass below the scheduler
     # timeout so later worker classes are not starved by this backlog.
