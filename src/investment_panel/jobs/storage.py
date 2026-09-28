@@ -17,6 +17,7 @@ from investment_panel.infrastructure.postgres.option_evidence_archive import Opt
 from investment_panel.infrastructure.postgres.ticker_evidence_archive import TickerEvidenceArchive
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
 from investment_panel.infrastructure.postgres.storage_archive import ARCHIVE_KINDS, StorageArchiveService
+from investment_panel.infrastructure.postgres.storage_audit import audit_storage
 
 
 def _service(config_path: str | None) -> StorageArchiveService:
@@ -65,6 +66,10 @@ def run(
 ) -> dict[str, Any]:
     batch_size = batch_size if batch_size is not None else (25 if phase in {"decision-context", "decision-inputs", "decision-evidence", "ranking-refs", "ranking-payloads"} else 10 if phase in {"publications", "option-scans", "ticker-decisions"} else 500)
     service = _service(config_path)
+    if command == "audit":
+        if execute:
+            raise ValueError("storage audit is read-only; omit --execute")
+        return audit_storage(service.runtime)
     if command == "account":
         return service.account(record=True)
     if command == "restore" and phase == "option-scans":
@@ -158,7 +163,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verified, resumable Market storage operations")
-    parser.add_argument("command", choices=("plan", "account", "archive", "verify", "compact", "restore"))
+    parser.add_argument("command", choices=("plan", "audit", "account", "archive", "verify", "compact", "restore"))
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--phase", choices=sorted(ARCHIVE_KINDS | {"price-confirmations", "decision-context", "decision-inputs", "decision-evidence", "ranking-refs", "ranking-payloads", "hot-options", "relative-values"}))
     parser.add_argument("--state", choices=("plan", "backfill", "verify", "cutover", "gc"), default="plan")
