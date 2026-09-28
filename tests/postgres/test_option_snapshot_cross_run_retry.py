@@ -15,7 +15,7 @@ def capture(application_postgres_dsn):
     runtime.open()
     try:
         repository = IngestionRepository(runtime)
-        repository.register_source("option-cross-run", name="Audit", family="broker", kind="option_chain")
+        repository.register_source("option-cross-run", name="Audit", family="broker", kind="option_chain", origin="test")
         at = datetime.now(UTC) - timedelta(minutes=5)
         row = {"symbol": "QQQ", "expiration": (at + timedelta(days=30)).date().isoformat(),
                "strike": 500, "option_type": "call", "provider_symbol": "cross-run-contract",
