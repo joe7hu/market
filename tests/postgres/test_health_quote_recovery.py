@@ -18,6 +18,7 @@ from investment_panel.infrastructure.postgres.options_publication import OPTION_
 from investment_panel.infrastructure.postgres import options
 from investment_panel.infrastructure.postgres.options_recovery_execution import RecoveryExecutionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.today_analysis import refresh_today_publication
 from investment_panel.jobs import paper_quotes
 from investment_panel.settings import load_config
 
@@ -279,6 +280,40 @@ def test_unrelated_publication_reads_do_not_run_option_projections(migrated_post
                 assert [row["payload"] for row in rows] == [brief]
         publication = analysis.publication_at_or_before("today", cutoff=datetime.now(UTC))
         assert publication is not None
+    finally:
+        runtime.close()
+
+
+def test_prior_brief_lookup_does_not_hydrate_full_publication_history(migrated_postgres_dsn, monkeypatch):
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        analysis = AnalysisRepository(runtime)
+        cutoff = datetime.now(UTC) + timedelta(minutes=5)
+        for age in reversed(range(64)):
+            published_at = cutoff - timedelta(days=age)
+            run = analysis.start_run("health-brief", input_cutoff=published_at, code_version="health-test", inputs={})
+            publication = analysis.publish(run, "today", {"preopen_daily_brief": [{"brief_date": published_at.date().isoformat(), "summary": f"brief {age}"}]})
+            with runtime.transaction() as connection:
+                connection.execute("UPDATE app.publication SET published_at = %s WHERE id = %s", [published_at, publication])
+        plans = []
+        original_read = runtime.read
+        @contextmanager
+        def read(*args, **kwargs):
+            with original_read(*args, **kwargs) as connection:
+                connection.execute("SET LOCAL enable_seqscan = off")
+                def execute(query, parameters=None):
+                    if "publication_run" in query and "brief_date" in query:
+                        plans.append(connection.execute("EXPLAIN (ANALYZE, FORMAT JSON) " + query, parameters).fetchone()["QUERY PLAN"][0]["Plan"])
+                    return connection.execute(query, parameters)
+                yield SimpleNamespace(execute=execute)
+        monkeypatch.setattr(runtime, "read", read)
+        assert refresh_today_publication(runtime, now=cutoff)["publication_id"]
+        def brief_reads(plan):
+            count = (plan.get("Actual Rows", 0) + plan.get("Rows Removed by Filter", 0)) * plan.get("Actual Loops", 0) if plan.get("Relation Name") == "publication_bundle_item" else 0
+            return count + sum(brief_reads(child) for child in plan.get("Plans", []))
+        assert len(plans) == 1
+        assert brief_reads(plans[0]) < 8
     finally:
         runtime.close()
 

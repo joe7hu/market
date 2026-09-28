@@ -180,12 +180,17 @@ def refresh_today_publication(
             SELECT item.payload
             FROM app.publication publication
             JOIN analysis.run publication_run ON publication_run.id = publication.analysis_run_id
-            JOIN app.publication_content_item item ON item.publication_id = publication.id
+            JOIN LATERAL (
+                SELECT payload FROM app.publication_content_item
+                WHERE publication_id = publication.id
+                  AND model_name = 'preopen_daily_brief'
+                -- Bind the publication before hydrating historical payloads.
+                OFFSET 0
+            ) item ON true
             WHERE publication.scope = 'today' AND publication.status = 'published'
               AND publication.published_at IS NOT NULL
               AND publication.published_at <= %s
               AND publication_run.input_cutoff <= %s
-              AND item.model_name = 'preopen_daily_brief'
               AND item.payload->>'brief_date' = %s
             ORDER BY publication.published_at DESC NULLS LAST LIMIT 1
             """,
