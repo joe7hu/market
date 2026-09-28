@@ -65,10 +65,21 @@ remains insufficient. A green source or HTTP response is not qualification.
 - 100 focused scheduler, readiness, runtime, and PostgreSQL checks passed.
   An additional 27 stock-alpha/runtime checks passed.
 - `make guards`, `make check`, and the final `make release-gate` passed:
-  2,587 backend tests; 84.42% API/PostgreSQL coverage; 235 frontend checks;
+  2,587 backend tests; 84.42% API/PostgreSQL coverage; 234 frontend checks;
   TypeScript, generated contracts, production build, and whitespace checks.
 - The first full run found one stale exact-dictionary assertion for the added
   diagnostic field. It was updated; the full final run passed.
 - Structured Codex review, via `autoreview --mode local --engine codex`, reported
   no actionable findings. Raw final receipts:
   `/tmp/market-health-release-final.log`, `/tmp/market-health-review-final.json`.
+
+## Live producer receipt
+
+After deployment, the scheduler reported a 900-second social cadence and the
+browser showed Social & Private Graph healthy (1/1 active sources). Fresh runs
+confirmed zero challenger revisions and 28 resolved observations with zero
+eligible control samples. Outcome resolution processed 36 marks and resolved
+10 horizons; attribution remained blocked by recorded plan evidence failures.
+The three rows now display these causes without changing their success clocks.
+Receipts: `/tmp/market-health-live-jobs.json` and
+`/tmp/market-health-settings-after.json`.
