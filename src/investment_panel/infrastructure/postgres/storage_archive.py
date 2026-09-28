@@ -25,7 +25,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.domain.decision import MARKET_TZ, is_us_market_day
 from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
-from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime, JOB_PROFILE
 from investment_panel.infrastructure.postgres.storage_guard import storage_capacity
 
 
@@ -88,9 +88,10 @@ class StorageArchiveService:
         self.archive_root = archive_root
         self._verified_backup_cache: tuple[str, Path, Path, tuple[int, int, int, int, int], dict[str, Any]] | None = None
 
-    def account(self, *, record: bool = False) -> dict[str, Any]:
-        """Measure the PostgreSQL filesystem and a conservative 30-day trend."""
-        with self.runtime.read(JOB_PROFILE) as connection:
+    def account(self, *, record: bool = False, include_backlog: bool = True) -> dict[str, Any]:
+        """Measure files/trends; historical row sizing is explicit maintenance work."""
+        profile = JOB_PROFILE if include_backlog else API_PROFILE
+        with self.runtime.read(profile) as connection:
             data_dir = str(connection.execute("SELECT ops.postgres_data_directory() AS path").fetchone()["path"])
             database_bytes = int(connection.execute("SELECT pg_database_size(current_database()) AS bytes").fetchone()["bytes"])
             sizes = connection.execute(STORAGE_SIZE_QUERY).fetchall()
@@ -101,29 +102,31 @@ class StorageArchiveService:
                 WHERE verification_status IN ('verified', 'restored')
                   AND metadata ? 'uncompressed_bytes'
             """).fetchone()
-            backlog = connection.execute("""
-                SELECT
-                  ticker.count AS decisions, ticker.bytes AS decision_bytes,
-                  options.count AS option_scans, options.bytes AS option_bytes,
-                  evidence.bytes AS option_evidence_bytes
-                FROM (SELECT count(*) AS count,
-                             COALESCE(sum(pg_column_size(decision)), 0)::bigint AS bytes
-                      FROM analysis.ticker_decision decision
-                      WHERE as_of < now() - interval '30 days'
-                        AND evidence_state = 'local') ticker
-                CROSS JOIN (SELECT count(*) AS count,
-                                   COALESCE(sum(pg_column_size(scan) + pg_column_size(decision)), 0)::bigint AS bytes
-                            FROM analysis.option_decision scan
-                            JOIN analysis.decision decision ON decision.id = scan.decision_id
-                            WHERE decision.as_of < now() - interval '30 days'
-                              AND scan.evidence_state = 'local') options
-                CROSS JOIN (SELECT COALESCE(sum(pg_column_size(evidence)), 0)::bigint AS bytes
-                            FROM analysis.decision_evidence evidence
-                            JOIN analysis.decision decision ON decision.id = evidence.decision_id
-                            JOIN analysis.option_decision scan ON scan.decision_id = decision.id
-                            WHERE decision.as_of < now() - interval '30 days'
-                              AND scan.evidence_state = 'local') evidence
-            """).fetchone()
+            backlog = None
+            if include_backlog:
+                backlog = connection.execute("""
+                    SELECT
+                      ticker.count AS decisions, ticker.bytes AS decision_bytes,
+                      options.count AS option_scans, options.bytes AS option_bytes,
+                      evidence.bytes AS option_evidence_bytes
+                    FROM (SELECT count(*) AS count,
+                                 COALESCE(sum(pg_column_size(decision)), 0)::bigint AS bytes
+                          FROM analysis.ticker_decision decision
+                          WHERE as_of < now() - interval '30 days'
+                            AND evidence_state = 'local') ticker
+                    CROSS JOIN (SELECT count(*) AS count,
+                                       COALESCE(sum(pg_column_size(scan) + pg_column_size(decision)), 0)::bigint AS bytes
+                                FROM analysis.option_decision scan
+                                JOIN analysis.decision decision ON decision.id = scan.decision_id
+                                WHERE decision.as_of < now() - interval '30 days'
+                                  AND scan.evidence_state = 'local') options
+                    CROSS JOIN (SELECT COALESCE(sum(pg_column_size(evidence)), 0)::bigint AS bytes
+                                FROM analysis.decision_evidence evidence
+                                JOIN analysis.decision decision ON decision.id = evidence.decision_id
+                                JOIN analysis.option_decision scan ON scan.decision_id = decision.id
+                                WHERE decision.as_of < now() - interval '30 days'
+                                  AND scan.evidence_state = 'local') evidence
+                """).fetchone()
         path = Path(os.environ.get("MARKET_STORAGE_DATABASE_PATH") or data_dir)
         if not path.is_dir():
             return {"status": "unavailable", "path": str(path), "forecast_confidence": "unavailable",
@@ -149,7 +152,7 @@ class StorageArchiveService:
                       archived_bytes = EXCLUDED.archived_bytes, archive_rows = EXCLUDED.archive_rows
                 """, [now.date(), now, database_bytes, usage.free, logical,
                       int(archive["bytes"]), int(archive["rows"])])
-        with self.runtime.read(JOB_PROFILE) as connection:
+        with self.runtime.read(profile) as connection:
             samples = [dict(row) for row in connection.execute("""
                 SELECT * FROM ops.storage_daily_accounting
                 ORDER BY sample_day DESC LIMIT 30
@@ -189,16 +192,16 @@ class StorageArchiveService:
             "forecast_30d_free_bytes": forecast,
             "tracked_evidence_bytes_basis": "allocated_heap_toast_and_indexes_not_logical_payload_size",
             "accounting_column_note": "logical_evidence_bytes is the legacy database column name for allocated files",
-            "archive_backlog_basis": "old_local_rows_not_eligibility_count",
+            "archive_backlog_basis": "old_local_rows_not_eligibility_count" if include_backlog else "not_scanned_on_health_request",
             "filesystem_bytes_recovered": None, "reusable_bytes": None,
             "reserve_bytes": reserve,
-            "archive_backlog": {"decisions": int(backlog["decisions"]),
+            "archive_backlog": None if backlog is None else {"decisions": int(backlog["decisions"]),
                                 "option_scans": int(backlog["option_scans"])},
-            "protected_bytes": int(backlog["decision_bytes"] + backlog["option_bytes"]
+            "protected_bytes": None if backlog is None else int(backlog["decision_bytes"] + backlog["option_bytes"]
                                    + backlog["option_evidence_bytes"]),
-            "protected_rows": {"ticker_decisions": int(backlog["decisions"]),
+            "protected_rows": None if backlog is None else {"ticker_decisions": int(backlog["decisions"]),
                                "option_scans": int(backlog["option_scans"])},
-            "protected_bytes_status": "old_local_row_lower_bound_excludes_shared_dependencies",
+            "protected_bytes_status": "old_local_row_lower_bound_excludes_shared_dependencies" if include_backlog else "not_scanned_on_health_request",
         }
 
     def plan(self) -> dict[str, Any]:
@@ -868,7 +871,7 @@ class StorageArchiveService:
             int(max(0.0, (reference - min(end for _, end in archive_candidates)).total_seconds()))
             if archive_candidates else 0
         )
-        accounting = self.account()
+        accounting = self.account(include_backlog=False)
         return {
             "local": {"path": str(Path.cwd()), "free_bytes": local.free, "total_bytes": local.total,
                       "scope": "application_working_directory_not_database_measurement"},

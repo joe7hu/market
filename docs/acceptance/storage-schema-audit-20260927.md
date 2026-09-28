@@ -51,6 +51,19 @@ replaceable by the retry, and real corrections still acquire the new run.
 Five additional restricted-role scenarios exercise both usable statuses and
 all three recovery statuses, including a later failed retry and real changes.
 
+### Bounded storage-health reads
+
+The storage-health endpoint previously called full maintenance accounting,
+including row-by-row historical evidence sizing under a 15-minute job
+statement timeout. Health now requests capacity/forecast accounting without
+that scan, with the normal three-second per-statement API budget. Historical
+row counts/sizes are explicitly not measured in that response, never zeroed
+or mislabeled. The explicit accounting command retains detailed measurements.
+A real restricted-role PostgreSQL regression observes executed queries and
+read profiles, preserves capacity decisions, and verifies that detailed
+maintenance accounting remains available. Filesystem/mount latency is not
+bounded by the PostgreSQL statement timeout.
+
 ### Index changes and deliberate non-changes
 
 Migration `20260927_0042` adds:
