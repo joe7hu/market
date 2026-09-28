@@ -581,19 +581,26 @@ class IngestionRepository:
                     received_contract_count = EXCLUDED.received_contract_count,
                     capture_state = EXCLUDED.capture_state
                 WHERE ROW(
-                    raw.option_snapshot.ingest_run_id, raw.option_snapshot.payload_id,
+                    raw.option_snapshot.payload_id,
                     raw.option_snapshot.market_session, raw.option_snapshot.completeness,
                     raw.option_snapshot.contract_count, raw.option_snapshot.collection_profile,
                     raw.option_snapshot.history_symbol, raw.option_snapshot.slot_at,
                     raw.option_snapshot.capture_started_at, raw.option_snapshot.capture_finished_at,
                     raw.option_snapshot.expected_contract_count,
                     raw.option_snapshot.received_contract_count, raw.option_snapshot.capture_state) IS DISTINCT FROM ROW(
-                    EXCLUDED.ingest_run_id, COALESCE(EXCLUDED.payload_id,
+                    COALESCE(EXCLUDED.payload_id,
                     raw.option_snapshot.payload_id), EXCLUDED.market_session, EXCLUDED.completeness,
                     EXCLUDED.contract_count, EXCLUDED.collection_profile, EXCLUDED.history_symbol,
                     EXCLUDED.slot_at, EXCLUDED.capture_started_at, EXCLUDED.capture_finished_at,
                     EXCLUDED.expected_contract_count, EXCLUDED.received_contract_count,
                     EXCLUDED.capture_state)
+                   OR (raw.option_snapshot.ingest_run_id IS DISTINCT FROM EXCLUDED.ingest_run_id
+                       AND NOT EXISTS (
+                         SELECT 1 FROM ingest.run previous_run
+                         WHERE previous_run.id = raw.option_snapshot.ingest_run_id
+                           AND previous_run.status IN ('succeeded', 'partial')
+                           AND previous_run.finished_at IS NOT NULL
+                       ))
                 RETURNING id
                 """,
                 [
@@ -801,7 +808,7 @@ class IngestionRepository:
                     """,
                     [source_id],
                 )
-                connection.execute(
+                quote_result = connection.execute(
                     """
                     WITH staged AS (
                         SELECT s.*,
@@ -898,6 +905,15 @@ class IngestionRepository:
                     [quote_observed_at, observed_at, quote_observed_at, quote_observed_at,
                      snapshot_id, capture_generation_id, observed_at, observed_at],
                 )
+                if quote_result.rowcount:
+                    # Changed or newly inserted quote facts must acquire the
+                    # incoming run's availability, even with identical header
+                    # metadata. An unchanged retry keeps its usable old run.
+                    connection.execute(
+                        """UPDATE raw.option_snapshot SET ingest_run_id = %s
+                           WHERE id = %s AND ingest_run_id IS DISTINCT FROM %s""",
+                        [run_id, snapshot_id, run_id],
+                    )
             connection.execute(
                 """UPDATE ingest.run SET item_count = %s, instrument_count = %s WHERE id = %s
                    AND (item_count, instrument_count) IS DISTINCT FROM (%s, %s)""",

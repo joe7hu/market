@@ -51,6 +51,19 @@ replaceable by the retry, and real corrections still acquire the new run.
 Five additional restricted-role scenarios exercise both usable statuses and
 all three recovery statuses, including a later failed retry and real changes.
 
+### Independent-review correction: option snapshot provenance
+
+An identical option replay could likewise attach a previously valid snapshot
+to a new running run; a later failure hid it from the current option panel.
+Identical headers and quote facts now retain usable completed provenance.
+Failed, skipped or unfinished provenance is repaired by the incoming run.
+Crucially, a changed or newly inserted quote still attaches the snapshot to
+the incoming run even when its header is unchanged: changed facts must not
+be presented with the old successful run's earlier availability timestamp.
+Nine additional PostgreSQL scenarios exercise the actual current-option
+panel query, usable/recovery statuses, failed replays, quote corrections,
+provider-payload revisions, new observations and snapshot metadata changes.
+
 ### Bounded storage-health reads
 
 The storage-health endpoint previously called full maintenance accounting,
