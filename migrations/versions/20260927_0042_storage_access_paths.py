@@ -48,11 +48,14 @@ def _projection_sql(bundle_filter: str = "") -> str:
           """ + bundle_filter + ") " + projected
 
 
+# Reuse 0031's existing full content-hash index on publication_bundle_item.
+# Do not add a second partial copy of the same lookup path.
 _INDEXES = (
     ("app.publication_bundle_item", "publication_bundle_decision_payload_idx", "decision_payload_hash"),
     ("app.current_publication_item", "current_publication_decision_payload_idx", "decision_payload_hash"),
-    ("app.publication_bundle_item", "publication_bundle_content_hash_idx", "content_hash"),
     ("app.current_publication_item", "current_publication_content_hash_idx", "content_hash"),
+    ("analysis.ticker_decision", "ticker_decision_market_context_idx", "market_state_context_hash"),
+    ("analysis.ticker_decision", "ticker_decision_policy_context_idx", "risk_policy_context_hash"),
 )
 
 _PHYSICAL_CURRENT = """
@@ -148,5 +151,6 @@ def downgrade() -> None:
         JOIN app.option_publication_projection projected ON projected.bundle_id = publication.bundle_id
     """)
     op.execute("DROP FUNCTION app.option_bundle_projection(uuid)")
-    for _, name, _ in reversed(_INDEXES):
-        op.execute(f"DROP INDEX app.{name}")
+    for relation, name, _ in reversed(_INDEXES):
+        schema = relation.split(".", 1)[0]
+        op.execute(f"DROP INDEX {schema}.{name}")

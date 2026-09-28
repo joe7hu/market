@@ -304,6 +304,10 @@ class IngestionRepository:
                                  (coalesce(period_start, DATE '0001-01-01')))
                     DO UPDATE SET ingest_run_id = EXCLUDED.ingest_run_id,
                         filed_at = EXCLUDED.filed_at, values = EXCLUDED.values
+                    WHERE (raw.fundamental_observation.ingest_run_id,
+                           raw.fundamental_observation.filed_at,
+                           raw.fundamental_observation.values) IS DISTINCT FROM
+                          (EXCLUDED.ingest_run_id, EXCLUDED.filed_at, EXCLUDED.values)
                     """,
                     [instrument_id, source_id, run_id, metric_set, period_start, period_end, filed_at, observed_at, Jsonb(values)],
                 )

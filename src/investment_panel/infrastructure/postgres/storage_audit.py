@@ -6,6 +6,7 @@ read. Allocated files and statistical estimates are deliberately separate.
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 from typing import Any
 
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, RuntimeProfile
@@ -132,7 +133,24 @@ def _index_advice(indexes: list[dict[str, Any]], constraints: list[dict[str, Any
         if not covered:
             missing.append({"relation": constraint["relation"], "constraint": constraint["name"],
                             "columns": constraint["columns"], "action": "measure_before_adding_index"})
-    return {"equivalent_index_candidates": duplicates, "foreign_key_index_candidates": missing,
+    # Identical key layouts can still overlap when one index omits only NULLs.
+    # This is advisory: a deliberately small partial index may serve a distinct
+    # workload, and the full index might be required for IS NULL lookups.
+    nullable_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
+    for index in indexes:
+        if index["key_count"] == 1 and index["expressions"] is None:
+            nullable_groups[tuple(index[field] for field in fields if field != "predicate")].append(index)
+    overlaps = []
+    for rows in nullable_groups.values():
+        full = [row for row in rows if row["predicate"] is None]
+        partial = [row for row in rows if row["predicate"] is not None
+                   and re.fullmatch(r'\(?"?\w+"? IS NOT NULL\)?', row["predicate"])]
+        for complete in full:
+            for subset in partial:
+                overlaps.append({"relation": complete["relation"], "full_index": complete["name"],
+                                 "partial_index": subset["name"], "action": "review_only"})
+    return {"equivalent_index_candidates": duplicates, "overlapping_nonnull_index_candidates": overlaps,
+            "foreign_key_index_candidates": missing,
             "unused_indexes": "not_inferred_from_zero_scans"}
 
 
@@ -152,21 +170,33 @@ def audit_storage(runtime: DatabaseRuntime) -> dict[str, Any]:
             (SELECT stats_reset FROM pg_stat_database WHERE datname = current_database()) AS statistics_reset_at
         """).fetchone()
         revision = connection.execute("SELECT version_num FROM public.alembic_version").fetchone()
-        tables = connection.execute(TABLES_QUERY, [list(SCHEMAS)]).fetchall()
-        columns = connection.execute(COLUMNS_QUERY, [list(SCHEMAS)]).fetchall()
-        indexes = connection.execute(INDEXES_QUERY, [list(SCHEMAS)]).fetchall()
-        constraints = connection.execute(CONSTRAINTS_QUERY, [list(SCHEMAS)]).fetchall()
+        # Discover all non-system schemas; otherwise a forgotten legacy table
+        # in public or a custom schema would silently escape a storage audit.
+        schemas = [row["schema"] for row in connection.execute("""
+            SELECT nspname::text AS schema FROM pg_namespace
+            WHERE left(nspname, 3) <> 'pg_' AND nspname <> 'information_schema'
+            ORDER BY nspname
+        """).fetchall()]
+        tables = connection.execute(TABLES_QUERY, [schemas]).fetchall()
+        columns = connection.execute(COLUMNS_QUERY, [schemas]).fetchall()
+        indexes = connection.execute(INDEXES_QUERY, [schemas]).fetchall()
+        constraints = connection.execute(CONSTRAINTS_QUERY, [schemas]).fetchall()
     for table in tables:
         table["auxiliary_bytes"] = (table["allocated_bytes"] - table["heap_bytes"]
                                     - table["toast_bytes"] - table["index_bytes"])
     return {"format": "market-storage-audit.v1", **identity,
             "schema_revision": revision["version_num"] if revision else None,
-            "coverage": {"schemas": list(SCHEMAS), "table_count": len(tables),
+            "coverage": {"schemas": schemas, "managed_schemas": list(SCHEMAS), "table_count": len(tables),
+                         "unmanaged_relations": [row["relation"] for row in tables
+                             if row["relation"].split(".", 1)[0] not in SCHEMAS
+                             and row["relation"] != "public.alembic_version"],
                          "column_count": len(columns), "index_count": len(indexes),
                          "constraint_count": len(constraints),
                          "columns_without_visible_statistics": sum(not row["statistics_visible"] for row in columns),
                          "unreadable_tables": [row["relation"] for row in tables if not row["can_read"]]},
-            "application_allocated_bytes": sum(row["allocated_bytes"] for row in tables),
+            "user_relation_allocated_bytes": sum(row["allocated_bytes"] for row in tables),
+            "application_allocated_bytes": sum(row["allocated_bytes"] for row in tables
+                if row["relation"].split(".", 1)[0] in SCHEMAS),
             "filesystem_bytes_recovered": None, "reusable_bytes": None,
             "growth_bytes_per_day": None,
             "measurement_notes": [
@@ -175,6 +205,8 @@ def audit_storage(runtime: DatabaseRuntime) -> dict[str, Any]:
                 "Tuple, width and distinct counts are statistics, not exact counts or live-byte measurements.",
                 "Absent column statistics can mean no ANALYZE or restricted visibility, not unused data.",
                 "Index equivalence is advisory; constraints, replica identity and deployment dependencies still matter.",
+                "Foreign-key advice checks leading columns, not operator-family or planner selectivity guarantees.",
+                "Full versus non-NULL-only index overlap requires workload review; it is not an automatic drop instruction.",
                 "No provider values, default expressions, common-value arrays or histograms are read.",
                 "Allocated file sizes include reusable pages and are not logical evidence size.",
                 "One observation cannot establish growth, rewrite headroom, or filesystem recovery.",
