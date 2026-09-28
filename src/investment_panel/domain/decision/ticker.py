@@ -12,11 +12,12 @@ from investment_panel.domain.decision.reference_signal import ReferenceSignal, b
 from investment_panel.domain.decision.assessment import assessment_quote
 
 from datetime import UTC, date, datetime, timedelta
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 import hashlib
 import json
 import math
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -2667,7 +2668,7 @@ def _trade_plan_id(payload: Mapping[str, Any]) -> str:
     content = dict(payload)
     if content.get("strategy_forecast_id") is None:
         content.pop("strategy_forecast_id", None)
-    encoded = json.dumps(_trade_plan_jsonable(content), sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(content, default=_trade_plan_jsonable, sort_keys=True, separators=(",", ":"))
     return f"{TRADE_PLAN_CONTRACT_VERSION}:{hashlib.sha256(encoded.encode()).hexdigest()}"
 
 
@@ -2710,6 +2711,8 @@ def _outcome_attribution_jsonable(value: Any, *, key: str | None = None) -> Any:
 
 
 def _trade_plan_jsonable(value: Any) -> Any:
+    if value is None or type(value) in (str, int, float, bool):
+        return value
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if isinstance(value, Mapping):

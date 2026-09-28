@@ -4,6 +4,7 @@ A missing or invalid plan must neither suppress a complete independent plan nor
 leak a partially built six-unit set into canonical authority.
 """
 from datetime import UTC, datetime, timedelta
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,7 @@ from investment_panel.domain.decision import OutcomeAttribution, outcome_attribu
 from investment_panel.infrastructure.postgres import ticker_decisions
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
-from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime
 
 
 @pytest.mark.parametrize('failure', ['missing_units', 'invalid_unit', 'plan_blocked'])
@@ -69,11 +70,39 @@ def test_complete_plan_publishes_without_incomplete_plan_or_partial_set(migrated
             })
         monkeypatch.setattr(ticker_decisions, 'plan_authority', authority)
         monkeypatch.setattr(ticker_decisions, '_build_outcome_attribution', attribution)
+        original_read, original_snapshot = runtime.read, runtime.snapshot
+        inserted = []
+
+        @contextmanager
+        def concurrent_reader(factory, profile):
+            with factory(profile) as connection:
+                class ObservedConnection:
+                    def execute(self, query, *args, **kwargs):
+                        cursor = connection.execute(query, *args, **kwargs)
+                        if 'AS potential' in query and not inserted:
+                            inserted.append(True)
+                            with runtime.transaction() as writer:
+                                writer.execute("""
+                                    INSERT INTO analysis.ticker_decision (instrument_id, decision_revision,
+                                      contract_version, as_of, input_hash, code_version, experiment_id,
+                                      tactical, fundamental, capital_action, risk_policy, input_manifest)
+                                    VALUES (%s, 'late-legacy', 'test', %s, %s, 'test', 'test',
+                                      '{}', '{}', '{}', '{}', '{}')
+                                """, [instrument, cutoff, 'f' * 64])
+                        return cursor
+
+                    def cursor(self, *args, **kwargs):
+                        return connection.cursor(*args, **kwargs)
+                yield ObservedConnection()
+
+        monkeypatch.setattr(runtime, 'read', lambda profile=API_PROFILE: concurrent_reader(original_read, profile))
+        monkeypatch.setattr(runtime, 'snapshot', lambda profile=API_PROFILE: concurrent_reader(original_snapshot, profile))
         repository = ticker_decisions.TickerDecisionRepository(runtime)
         result = repository.publish_outcome_attributions(now=observed)
         assert result['status'] == 'partial', result
         assert result['published_count'] == 6
         assert result['excluded_plan_count'] == 1
+        assert result['evaluated_count'] == 2
         assert result['blockers']
         rows = AnalysisRepository(runtime).publication_rows('ticker-outcome-attribution', 'outcome_attribution')
         assert len(rows) == 6

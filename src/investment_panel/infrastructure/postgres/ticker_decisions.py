@@ -132,25 +132,29 @@ def semantic_decision_fingerprint(decision: TickerDecision) -> str:
 
 # Attribution needs plan lineage, not the immutable multi-megabyte evidence
 # snapshots. Keep this projection bounded while retaining every historical
-# decision that can own an outcome.
+# decision that can own an outcome. Known BLOCKED plans remain in the
+# publisher's coverage counts without loading their unusable snapshots.
 OUTCOME_ATTRIBUTION_DECISION_QUERY = """
     WITH plan_candidates AS MATERIALIZED (
         SELECT decision.id, decision.as_of
         FROM analysis.ticker_decision decision
+        CROSS JOIN LATERAL (SELECT CASE WHEN decision.evidence_refs->'manifest' ? 'trade_plan'
+            THEN analysis.decision_payload(decision.evidence_refs #>> '{manifest,trade_plan}')
+            ELSE decision.input_manifest->'trade_plan' END AS value OFFSET 0) plan
         WHERE decision.status IN ('published', 'superseded')
           AND decision.as_of <= %s
-          AND (CASE WHEN decision.evidence_refs->'manifest' ? 'trade_plan'
-                    THEN jsonb_typeof(analysis.decision_payload(
-                        decision.evidence_refs #>> '{manifest,trade_plan}'))
-                    ELSE jsonb_typeof(decision.input_manifest->'trade_plan')
-               END) = 'object'
+          AND jsonb_typeof(plan.value) = 'object'
+          AND plan.value->>'eligibility' IS DISTINCT FROM 'BLOCKED'
     ), decisions AS (
         SELECT keys.decision_id, instrument.symbol AS ticker,
                decision.decision_revision, decision.contract_version,
                keys.as_of, decision.tactical, decision.fundamental,
                analysis.expand_decision_capital(decision.capital_action,
                  resolution.value, decision.evidence_refs) AS capital_action,
-               resolution.value AS resolution,
+               CASE WHEN resolution.value->'portfolio_context' = manifest.value #> '{trade_plan,portfolio_impact}'
+                    THEN resolution.value - 'portfolio_context' ELSE resolution.value END AS resolution,
+               COALESCE(resolution.value->'portfolio_context' = manifest.value #> '{trade_plan,portfolio_impact}',
+                        FALSE) AS resolution_portfolio_context_from_plan,
                decision.policy_version, decision.opportunity_episode_id,
                decision.opportunity_cutoff, decision.risk_policy,
                CASE WHEN decision.evidence_refs->>'expressions_episode' = 'true'
@@ -1829,21 +1833,40 @@ class TickerDecisionRepository:
                 seen_units.update(plan_units)
                 attributions.extend(plan_attributions)
 
-        with self.runtime.read(JOB_PROFILE) as connection:
-            legacy_count = connection.execute(
+        with self.runtime.snapshot(JOB_PROFILE) as connection:
+            inventory = connection.execute(
                 """
-                SELECT count(*) AS count
+                SELECT count(*) AS total,
+                       count(*) FILTER (WHERE jsonb_typeof(plan.value) IS DISTINCT FROM 'object') AS legacy,
+                       count(*) FILTER (WHERE jsonb_typeof(plan.value) = 'object'
+                           AND plan.value->>'eligibility' IS DISTINCT FROM 'BLOCKED') AS potential,
+                       array_agg(DISTINCT COALESCE(NULLIF(plan.value->>'primary_blocker', ''), 'trade_plan_unavailable'))
+                           FILTER (WHERE jsonb_typeof(plan.value) = 'object'
+                               AND plan.value->>'eligibility' = 'BLOCKED') AS blocked_reasons
                 FROM analysis.ticker_decision decision
-                WHERE decision.status IN ('published', 'superseded')
-                  AND decision.as_of <= %s
-                  AND (CASE WHEN decision.evidence_refs->'manifest' ? 'trade_plan'
-                            THEN jsonb_typeof(analysis.decision_payload(
-                                decision.evidence_refs #>> '{manifest,trade_plan}'))
-                            ELSE jsonb_typeof(decision.input_manifest->'trade_plan')
-                       END) IS DISTINCT FROM 'object'
+                CROSS JOIN LATERAL (SELECT CASE WHEN decision.evidence_refs->'manifest' ? 'trade_plan'
+                    THEN analysis.decision_payload(decision.evidence_refs #>> '{manifest,trade_plan}')
+                    ELSE decision.input_manifest->'trade_plan' END AS value OFFSET 0) plan
+                WHERE decision.status IN ('published', 'superseded') AND decision.as_of <= %s
                 """,
                 [reference],
-            ).fetchone()["count"]
+            ).fetchone()
+            if inventory["potential"] == 0:
+                legacy = int(inventory["legacy"])
+                return {
+                    "status": "blocked", "publication_status": "not_published",
+                    "evaluated_count": int(inventory["total"]),
+                    "published_count": 0, "published_plan_count": 0,
+                    "excluded_plan_count": int(inventory["total"]) - legacy,
+                    "excluded_legacy_count": legacy,
+                    "excluded_legacy_reasons": {"trade_plan_missing": legacy} if legacy else {},
+                    "blockers": ["no_available_trade_plans"],
+                    "blockers_by_reason": {"no_available_trade_plans": 1},
+                    "paper_only": True, "live_order_submission": False, "paper_orders": 0,
+                }
+            blockers.extend(inventory["blocked_reasons"] or [])
+            evaluated = int(inventory["total"]) - int(inventory["legacy"]) - int(inventory["potential"])
+            legacy_count = int(inventory["legacy"])
             outcomes_by_decision: dict[str, list[dict[str, Any]]] = {}
             with connection.cursor(name="ticker-attribution-outcomes") as cursor:
                 cursor.execute(OUTCOME_ATTRIBUTION_OUTCOME_QUERY)
@@ -2968,7 +2991,13 @@ def _attribution_surface_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _decision_from_row(row: Any) -> TickerDecision:
-    resolution = resolution_from_published(dict(row))
+    resolution_row = dict(row)
+    if row.get("resolution_portfolio_context_from_plan") is True:
+        resolution_row["resolution"] = {
+            **row["resolution"],
+            "portfolio_context": row["input_manifest"]["trade_plan"]["portfolio_impact"],
+        }
+    resolution = resolution_from_published(resolution_row)
     ticker = str(row["ticker"]).strip().upper()
     manifest = dict(row["input_manifest"] or {})
     portfolio_impacts = portfolio_impacts_from_persisted(

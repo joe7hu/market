@@ -444,13 +444,32 @@ def test_outcome_attribution_publication_is_full_and_replayable(
 
         repository = TickerDecisionRepository(runtime)
         assert not repository.has_pending_outcome_attributions(now=observed + timedelta(days=2))
+        with runtime.transaction() as connection:
+            connection.execute("INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('ATTRBLOCK', 'Blocked peer', 'equity')")
+        blocked = build_ticker_decision("ATTRBLOCK", {}, as_of=observed - timedelta(minutes=1))
+        repository.publish(bind_trade_plan(blocked, build_trade_plan(decision=blocked, rank=None)))
+        from investment_panel.infrastructure.postgres.ticker_decisions import (
+            OUTCOME_ATTRIBUTION_DECISION_QUERY, plan_authority,
+        )
+        with runtime.read() as connection:
+            projection = connection.execute(
+                OUTCOME_ATTRIBUTION_DECISION_QUERY, [observed + timedelta(days=2)],
+            ).fetchone()
+        projected_plan, blocker = plan_authority(projection)
+        assert blocker is None
+        assert projected_plan.model_dump(mode="json") == plan.model_dump(mode="json")
+        assert projection["opportunity_episode"]["input_lineage"]
+        assert projection["resolution_portfolio_context_from_plan"] is True
+        assert "portfolio_context" not in projection["resolution"]
         first = repository.publish_outcome_attributions(now=observed + timedelta(days=2))
         replay = repository.publish_outcome_attributions(now=observed + timedelta(days=2))
         if plan.eligibility == "BLOCKED":
             assert first["status"] == "blocked"
             assert replay["status"] == "blocked"
             return
-        assert first["status"] == "ok", first
+        assert first["status"] == "partial", first
+        assert first["evaluated_count"] == 2
+        assert first["excluded_plan_count"] == 1
         assert first["published_count"] == 6
         assert first["paper_orders"] == 0
         assert first["attribution_publication_id"] == replay["attribution_publication_id"]
@@ -1329,6 +1348,49 @@ def test_peer_return_bounds_large_confirmed_peer_sets_at_each_cutoff(
         assert abs(legacy_observed - repaired_observed) < 1e-12
         assert abs(repaired_observed - expected_comparison) < 1e-12
         assert abs(observed - expected) < 1e-12
+    finally:
+        runtime.close()
+
+
+def test_blocked_outcome_history_does_not_hydrate_unusable_snapshots(migrated_postgres_dsn):
+    from contextlib import contextmanager
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        reference = datetime.now(UTC)
+        with runtime.transaction() as connection:
+            connection.execute("INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('BLOCKOUT', 'Blocked outcome', 'equity')")
+        repository = TickerDecisionRepository(runtime)
+        decision = build_ticker_decision("BLOCKOUT", {}, as_of=reference - timedelta(days=2))
+        plan = build_trade_plan(decision=decision, rank=None)
+        assert plan.eligibility == "BLOCKED"
+        repository.publish(bind_trade_plan(decision, plan))
+        original_read = runtime.snapshot
+        cursors = []
+
+        class ObservedConnection:
+            def execute(self, *args, **kwargs):
+                return self.connection.execute(*args, **kwargs)
+
+            def cursor(self, *args, **kwargs):
+                cursors.append(kwargs.get("name"))
+                return self.connection.cursor(*args, **kwargs)
+
+        @contextmanager
+        def observed_read(profile=JOB_PROFILE):
+            with original_read(profile) as connection:
+                observed = ObservedConnection()
+                observed.connection = connection
+                yield observed
+
+        runtime.snapshot = observed_read
+        result = repository.publish_outcome_attributions(now=reference)
+        assert result["status"] == "blocked"
+        assert result["published_count"] == 0
+        assert result["blockers"] == ["no_available_trade_plans"]
+        assert result["excluded_plan_count"] == 1
+        assert "ticker-attribution-decisions" not in cursors
     finally:
         runtime.close()
 
