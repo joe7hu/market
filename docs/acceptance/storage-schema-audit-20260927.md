@@ -12,7 +12,7 @@ physical rewrite, archive deletion or a second maintenance worker.
 The old production acceptance (2,528 tests, 84.33% coverage) applies to the old
 candidate only. Fresh restricted-role PostgreSQL tests and release gates are
 run for this PR; their final SHA, counts and logs belong to the PR verification
-comment and Actions artifacts. An independent external review is not claimed.
+comment and Actions artifacts. Independent Codex review results and any correction verification are recorded in the PR discussion.
 
 A clean PostgreSQL 18 catalog at the intermediate candidate exposed **154
 managed relations and 2,171 columns, including 209 JSONB columns**. Partition
@@ -39,6 +39,17 @@ the checkpoint failure was separately reproduced on original main. Later audit
 and fundamental scenarios are exercised against the pre-refinement candidate
 before their implementation. Final green evidence must identify the exact
 post-refinement commit, not merely the workflow's triggering commit.
+
+### Independent-review correction: cross-run fundamentals
+
+The first no-op guard compared ingestion run IDs, so an identical observation
+in a new successful run still rewrote its JSON and moved its availability
+provenance. The independent Codex review identified this gap. The final guard
+compares filing values and date; an identical observation retains its original
+completed successful/partial run. Failed, skipped or unfinished provenance is
+replaceable by the retry, and real corrections still acquire the new run.
+Five additional restricted-role scenarios exercise both usable statuses and
+all three recovery statuses, including a later failed retry and real changes.
 
 ### Index changes and deliberate non-changes
 
@@ -127,6 +138,10 @@ pending outcomes even when old enough to pass an age-only filter.
   continued existence on a fresh migration does not mean a writer restarted.
 - `app.publication_item`: still reads legacy publications without bundles.
   Removing it requires proof that all such rows have been migrated/archived.
+- `analysis.symbol_decision`: only its baseline table declaration was found; the
+  active `analysis.symbol_decision_outcome` references canonical `analysis.decision`,
+  not this legacy extension. Retire only after checking live legacy data and
+  archive coverage, not merely because the current source has no writer.
 - `app.research_report`: no active application producer/consumer was found in
   the code search; it is a retirement candidate. That does **not** prove the
   live table is empty or that any legacy rows can be destroyed. With no active
