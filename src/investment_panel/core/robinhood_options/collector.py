@@ -295,18 +295,36 @@ def collect_robinhood_option_chains(
     if isinstance(client, RobinhoodMcpClient):
         client.deadline = min(client.deadline, deadline) if client.deadline is not None else deadline
     native = [row for row in required_contracts or [] if row.get("provider_instrument_id")] if required_only else []
-    if native:
+    discovery_first = bool(native and required_contracts and any(
+        row["symbol"] == required_contracts[0]["symbol"] and not row.get("provider_instrument_id")
+        for row in required_contracts
+    ))
+    spot_by_symbol: dict[str, float | None] = {}
+
+    def capture_native() -> None:
         from investment_panel.core.robinhood_options.active_quotes import collect_active_quotes
         captured = collect_active_quotes(
             client, native, batch_size=quote_batch_size, deadline=deadline,
             payload_rows=lambda payload: _payload_list(payload, "results"),
             normalize_quote=option_quote_row,
         )
-        result.update(captured)
+        for symbol, rows in captured["rows"].items():
+            for row in rows:
+                row["underlying_price"] = spot_by_symbol.get(symbol)
+            result["rows"].setdefault(symbol, []).extend(rows)
+        for key in ("errors", "symbols_attempted", "contract_diagnostics"):
+            result.setdefault(key, []).extend(captured[key])
+
+    if native:
         native_catalog_ids = {row["contract_id"] for row in native}
         required_contracts = [row for row in required_contracts or [] if row["contract_id"] not in native_catalog_ids]
+        # Reuse the owner's least-attempted-first symbol order. A deferred phase stays
+        # older and leads a later pass, rather than receiving the same fixed budget.
+        if not discovery_first:
+            capture_native()
+    equity_symbols = list(dict.fromkeys(row["symbol"] for row in required_contracts or [])) if discovery_first else symbols
     try:
-        quote_rows = _fetch_equity_quotes(client, symbols, deadline=deadline)
+        quote_rows = _fetch_equity_quotes(client, equity_symbols, deadline=deadline)
     except Exception as exc:
         if not native:
             raise
@@ -358,6 +376,8 @@ def collect_robinhood_option_chains(
             result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s after {symbol}")
             result["timed_out"] = True
             break
+    if discovery_first:
+        capture_native()
     if required_only:
         for contract in required_contracts or []:
             if contract.get("contract_id") is None:

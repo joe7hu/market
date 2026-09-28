@@ -85,6 +85,7 @@ def _running_generation(
     collection_profile: str,
     universe: str | None,
 ) -> Any | None:
+    connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('raw.option_quote.partition', 0))")
     return connection.execute(
         """
         SELECT generation.id, snapshot.id AS snapshot_id

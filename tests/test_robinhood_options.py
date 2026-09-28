@@ -582,6 +582,45 @@ def test_active_ticket_refresh_does_not_scan_unrelated_contracts() -> None:
     assert [(row["expiry"], row["strike"]) for row in result["rows"]["NVDA"]] == [("2026-06-26", 300.0)]
 
 
+@pytest.mark.parametrize("shared_symbol", [False, True])
+def test_active_native_batches_leave_time_for_contract_discovery(monkeypatch, shared_symbol):
+    from investment_panel.core.robinhood_options import collector
+    clock = [0.0]
+    monkeypatch.setattr(collector.time, "monotonic", lambda: clock[0])
+    class SlowClient(RobinhoodMcpClient):
+        def __init__(self):
+            self.deadline = None
+        def request(self):
+            remaining = self.deadline - clock[0]
+            clock[0] += min(8, max(0, remaining))
+            if remaining < 8:
+                raise TimeoutError("provider deadline")
+        def get_option_quotes(self, ids):
+            self.request()
+            return _FakeRobinhoodClient().get_option_quotes(ids)
+        def get_equity_quotes(self, symbols):
+            self.request()
+            return _FakeRobinhoodClient().get_equity_quotes(symbols)
+        def get_option_chains(self, symbol):
+            self.request()
+            return _FakeRobinhoodClient().get_option_chains(symbol)
+        def get_option_instruments(self, **arguments):
+            self.request()
+            return _FakeRobinhoodClient().get_option_instruments(**arguments)
+    required = [{"contract_id": i, "symbol": f"SYM{i}", "expiration": "2026-06-26", "strike": 205,
+                 "option_type": "call", "provider_instrument_id": f"native-{i}"} for i in range(44)]
+    # The quote owner puts the least-recently attempted/missing symbol first.
+    if shared_symbol:
+        required[0]["symbol"] = "NVDA"
+    strike = 210 if shared_symbol else 205
+    required.insert(1 if shared_symbol else 0, {"contract_id": 44, "symbol": "NVDA", "expiration": "2026-06-26", "strike": strike, "option_type": "call"})
+    result = collect_robinhood_option_chains(_ProviderConfig(max_collection_seconds=45),
+        [row["symbol"] for row in required], client=SlowClient(), required_contracts=required, required_only=True)
+    discovered = [row for row in result["rows"].get("NVDA", []) if row["contract_symbol"] == f"nvda-2026-06-26-{strike}.0-c"]
+    assert len(discovered) == 1 and discovered[0]["bid"] == 5.95
+    assert clock[0] <= 45
+
+
 def test_active_contracts_quote_native_ids_without_chain_rediscovery():
     class ActiveClient(_FakeRobinhoodClient):
         def get_option_chains(self, _symbol):

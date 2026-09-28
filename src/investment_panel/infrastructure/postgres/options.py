@@ -75,10 +75,11 @@ def active_paper_contracts(config: AppConfig, source_id: str) -> list[dict[str, 
                JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
                LEFT JOIN attempts ON attempts.symbol = instrument.symbol
                LEFT JOIN LATERAL (
-                   SELECT max(quote.observed_at) AS observed_at FROM raw.option_quote quote
+                   SELECT quote.observed_at FROM raw.option_quote quote
                    JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
                    WHERE quote.contract_id = contract.id AND quote.available_at <= now() AND quote.observed_at <= now()
                      AND snapshot.source_id = %s AND snapshot.capture_state = 'complete'
+                   ORDER BY quote.observed_at DESC LIMIT 1
                ) latest ON true
                WHERE contract.expiration >= (now() AT TIME ZONE 'America/New_York')::date
                ORDER BY attempts.last_attempt_at NULLS FIRST,

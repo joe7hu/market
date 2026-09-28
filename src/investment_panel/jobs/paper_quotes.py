@@ -30,8 +30,11 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     # The owner prioritizes least-recently attempted symbols, then old quotes.
     # Failed/unsupported symbols must not repeatedly consume the first batch.
     # Keep every leg for each selected symbol together.
-    symbols = list(dict.fromkeys(row["symbol"] for row in required))[:20]
-    selected = [row for row in required if row["symbol"] in symbols]
+    # Native IDs use bounded quote batches, so refresh the whole owned set.
+    # Only chain discovery needs the symbol cap; the collector keeps its deadline.
+    discovery = list(dict.fromkeys(row["symbol"] for row in required if not row.get("provider_instrument_id")))[:20]
+    selected = [row for row in required if row.get("provider_instrument_id") or row["symbol"] in discovery]
+    symbols = list(dict.fromkeys(row["symbol"] for row in selected))
     bounded = replace(provider, max_collection_seconds=45, timeout_seconds=10)
     policy = OptionHistoryPolicyRepository(runtime_for_config(config))
     lease = policy.acquire_provider_lease(provider="robinhood", workload="paper_execution_quotes",
@@ -45,16 +48,17 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
         collected = collect_robinhood_option_chains(bounded, symbols, required_contracts=selected, required_only=True)
         source_status = "partial" if collected.get("errors") else "ok"
         persisted = persist_collected_option_chains(config, "robinhood", collected, universe="paper-tickets")
-    except Exception:
+    except Exception as error:
         logger.exception("Targeted paper quote collection/persistence failed")
         # The scheduler persists this failed attempt, including its universe,
         # without treating it as a quote capture or resetting source freshness.
         return {"status": "failed", "reason": "paper_quote_capture_failed", "paper_only": True,
+                "error": f"{type(error).__name__}: {error}",
                 "live_brokerage_submission": False, "source_id": "robinhood",
                 "source_status": source_status, "downstream_status": "failed" if source_status != "failed" else "not_run",
                 "symbols_requested": symbols, "symbols_attempted": collected.get("symbols_attempted") or [],
                 "contracts_required": len(required),
-                "contracts_selected": len(selected)}
+                "contracts_selected": len(selected), "errors": [f"{type(error).__name__}: {error}"]}
     finally:
         policy.release_provider_lease(lease.id)
     count = (len(persisted["matched_contract_ids"]) if "matched_contract_ids" in persisted

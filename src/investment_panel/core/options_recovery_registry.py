@@ -102,7 +102,7 @@ _COMMON_PARAMETERS: dict[str, float | int] = {
 _STRATEGIES: dict[str, RegistryStrategy] = {
     SHOCK_REVERSAL_CALL_V1: RegistryStrategy(
         key=SHOCK_REVERSAL_CALL_V1,
-        revision=1,
+        revision=2,
         name="Shock reversal calls",
         parameters={
             **_COMMON_PARAMETERS,
@@ -112,7 +112,7 @@ _STRATEGIES: dict[str, RegistryStrategy] = {
     ),
     SHOCK_CONTINUATION_PUT_V1: RegistryStrategy(
         key=SHOCK_CONTINUATION_PUT_V1,
-        revision=1,
+        revision=2,
         name="Shock continuation puts",
         parameters={
             **_COMMON_PARAMETERS,

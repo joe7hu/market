@@ -23,6 +23,7 @@ def defer_stale_running_captures(
     as_of = now or datetime.now(UTC)
     cutoff = as_of - stale_after
     with runtime.transaction(JOB_PROFILE) as connection:
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('raw.option_quote.partition', 0))")
         rows = connection.execute(
             """
             SELECT generation.id AS generation_id, generation.ingest_run_id,

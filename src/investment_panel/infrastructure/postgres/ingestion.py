@@ -184,6 +184,7 @@ class IngestionRepository:
     def store_quotes(self, run_id: UUID, source_id: str, rows: Sequence[dict[str, Any]]) -> int:
         stored = 0
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('raw.option_quote.partition', 0))")
             for source in rows:
                 try:
                     symbol = canonical_symbol(source.get("symbol"))

@@ -121,6 +121,7 @@ class HotRetention:
                             saved = connection.execute("SELECT cursor FROM ops.storage_archive_checkpoint WHERE checkpoint_key = %s", [key]).fetchone()
                             cursor = dict(saved["cursor"]) if saved else {}
                             if part == "options":
+                                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('raw.option_quote.partition', 0))")
                                 counts, next_cursor, done = self._options(connection, cursor, reference, batch_size, option_days)
                             else:
                                 counts, next_cursor, done = self._relative_values(connection, cursor, reference, batch_size, analysis_days)

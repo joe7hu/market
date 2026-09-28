@@ -41,6 +41,7 @@ def store_price_bars(
     stored = 0
     stored_at = datetime.now(UTC)
     with runtime.transaction(JOB_PROFILE) as connection:
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('raw.option_quote.partition', 0))")
         instruments: dict[str, int] = {}
         for symbol, source in examples.items():
             asset_class = normalized_asset_classes.get(symbol, str(source.get("asset_class") or "equity"))
