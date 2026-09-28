@@ -242,7 +242,7 @@ supports `document.modelContext`, enable the five read-only inspection tools:
 ```bash
 VITE_MARKET_WEBMCP=true npm --prefix frontend run dev
 # For the bundled frontend, the flag must be set when building:
-VITE_MARKET_WEBMCP=true npm --prefix frontend run dev
+VITE_MARKET_WEBMCP=true npm --prefix frontend run build
 ```
 
 This exposes private app evidence to your trusted browser agent, not to a new
