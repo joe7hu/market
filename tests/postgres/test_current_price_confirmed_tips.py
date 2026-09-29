@@ -1,4 +1,4 @@
-"""0034 must be observationally equivalent to 0030, with bounded quote work."""
+"""Confirmed-tip optimization preserves observation-first selection and bounded work."""
 
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
@@ -14,6 +14,13 @@ def _reference(connection):
     sql = import_module(
         "migrations.versions.20260921_0030_current_price_information_time"
     )._function(information_time_first=True)
+    # Keep the unoptimized all-history oracle, but apply the observation-first
+    # contract introduced by 0045. Confirmation only breaks observation ties.
+    old_order = """CASE WHEN candidate.observed_at = candidate.source_latest_observed_at
+                          THEN candidate.confirmed_at END DESC NULLS LAST,
+                     candidate.confirmed_at DESC, candidate.observed_at DESC"""
+    assert sql.count(old_order) == 1
+    sql = sql.replace(old_order, "candidate.observed_at DESC, candidate.confirmed_at DESC")
     connection.execute(sql.replace(
         "FUNCTION raw.current_price_for_instruments(",
         "FUNCTION raw.test_reference_current_price(", 1,
@@ -80,7 +87,8 @@ def test_confirmed_tips_preserve_versions_cutoffs_and_source_information_time(mi
             write("tip-broker", observed - timedelta(hours=1), 42)
             assert _compare(connection, instrument_id, cutoffs[-1])[0]["price"] == 101
             write("tip-second", observed - timedelta(minutes=1), 102)
-            assert _compare(connection, instrument_id, cutoffs[-1])[0]["price"] == 102
+            # A later-arriving *different* source must not displace a fresher quote.
+            assert _compare(connection, instrument_id, cutoffs[-1])[0]["price"] == 101
             run = repository.start_run("tip-daily", "price_bars")
             repository.store_price_bars(
                 run, "tip-daily", [{"symbol": "TIP", "date": "2026-07-02", "close": 97}],
