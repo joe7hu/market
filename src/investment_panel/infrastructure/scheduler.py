@@ -310,6 +310,11 @@ def _schedule_pipeline_successor(
     """Run a refreshed decision input through its dependent decision stages."""
 
     successor = DECISION_PIPELINE_SUCCESSORS.get(job)
+    # Respect explicit stage disablement without freezing quote publication.
+    # Enabled feature construction remains a prerequisite; disabled stages are
+    # not silently recreated, and downstream evidence gates still fail closed.
+    while successor is not None and successor not in next_due:
+        successor = DECISION_PIPELINE_SUCCESSORS.get(successor)
     source_ready = (
         bool(result)
         and result.get("status") in {"succeeded", "partial"}

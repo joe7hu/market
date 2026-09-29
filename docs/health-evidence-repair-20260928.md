@@ -43,7 +43,10 @@ signal/ranking lineage, and cash comparators cannot become approved stock plans.
 Counterfactual outcomes are not relabeled as strategy performance.
 
 **Candidate production.** The shipped option-agent cadence is one day, retaining
-the existing one-run-per-day budget. New postmortem requests contain both the
+the existing one-run-per-day budget. Scheduler and agent overview use one cadence
+resolver: an explicit environment zero overrides a positive configured cadence;
+otherwise a configured zero stays paused, including in heavy-refresh mode.
+New postmortem requests contain both the
 historical decision strategy and a distinct current proposal baseline. The agent
 is instructed to propose only evidence-backed changes against that supplied
 baseline. A new candidate must match the baseline actually reviewed, which must

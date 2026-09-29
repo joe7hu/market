@@ -162,6 +162,21 @@ def heavy_refresh_enabled() -> bool:
     return os.environ.get("MARKET_IN_PROCESS_HEAVY_REFRESH", "0").strip().lower() not in _TRUTHY_OFF
 
 
+def option_agent_interval(config: AppConfig) -> int:
+    """One cadence authority for scheduling and its user-visible status.
+
+    An explicit environment value (including zero) overrides configuration.
+    Otherwise a configured zero pauses generation, even in heavy-refresh mode.
+    The shipped configuration supplies the daily default; budgets still apply.
+    """
+    if not config.agents.option_agent.enabled:
+        return 0
+    override = _env_int_optional("MARKET_AGENT_REFRESH_SECONDS")
+    if override is not None:
+        return override
+    return max(0, int(config.agents.option_agent.auto_run_seconds or 0))
+
+
 def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
     active_config = config or load_config()
     option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower()
@@ -218,13 +233,9 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
     if learning_seconds > 0:
         intervals["refresh_options_radar_deterministic"] = learning_seconds
 
-    agent_seconds = _env_int_optional("MARKET_AGENT_REFRESH_SECONDS")
-    agent_seconds = (86400 if heavy_refresh else 0) if agent_seconds is None else agent_seconds
     option_agent = active_config.agents.option_agent
     auto_run_enabled = option_agent.enabled
-    configured = int(option_agent.auto_run_seconds or 0)
-    if configured > 0:
-        agent_seconds = configured
+    agent_seconds = option_agent_interval(active_config)
     if auto_run_enabled and agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
     experiment_enabled = False
