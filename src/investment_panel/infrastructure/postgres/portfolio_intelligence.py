@@ -393,8 +393,7 @@ def _confirmed_daily_price_bars(
         SELECT DISTINCT ON (confirmed.instrument_id, confirmed.trading_date)
                confirmed.instrument_id, requested.symbol, confirmed.trading_date,
                confirmed.close,
-               ((confirmed.trading_date::timestamp + time '16:00')
-                   AT TIME ZONE 'America/New_York') AS observed_at
+               confirmed.observed_at
         FROM confirmed
         JOIN requested_instruments requested ON requested.id = confirmed.instrument_id
         WHERE confirmed.trading_date <=

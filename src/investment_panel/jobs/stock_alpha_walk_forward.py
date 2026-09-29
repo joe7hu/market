@@ -1259,6 +1259,10 @@ def scheduled(config_path: str | None = None) -> dict[str, Any]:
     controls = build_control_results(observations, cutoff=cutoff)
     controls_missing = not controls["randomized_label_returns"] or not controls["white_noise_market_returns"]
     if controls_missing:
+        readiness = (controls.get("control_metadata") or {}).get("temporal_readiness") or {}
+        training_at = readiness.get("training_ready_for_new_decisions_at")
+        timing_detail = (f" Training labels first support new decision clocks from {training_at}; "
+                         "those later test outcomes must still mature.") if training_at else ""
         return {
             "status": "skipped",
             "reason": "repeated_control_observations_unavailable",
@@ -1270,7 +1274,7 @@ def scheduled(config_path: str | None = None) -> dict[str, Any]:
                        f"randomized-label samples: {len(controls['randomized_label_returns'])}; "
                        f"white-noise samples: {len(controls['white_noise_market_returns'])}. "
                        "Controls require training outcomes available before each test decision; "
-                       "overlapping outcome windows cannot supply those samples."),
+                       "overlapping outcome windows cannot supply those samples." + timing_detail),
         }
     result = run(
         runtime, observations, cutoff=cutoff,

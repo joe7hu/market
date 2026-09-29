@@ -18,7 +18,7 @@ def test_current_quote_rows_does_not_expand_an_explicit_empty_scope() -> None:
     assert current_quote_rows(Connection(), symbols=[]) == []
 
 
-def test_current_price_prefers_latest_available_intraday_quote_over_daily_nominal_close(
+def test_current_price_prefers_newer_intraday_observation_over_prior_daily_close(
     migrated_postgres_dsn: str,
 ) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
@@ -34,7 +34,7 @@ def test_current_price_prefers_latest_available_intraday_quote_over_daily_nomina
         repository.store_price_bars(
             daily_run,
             "daily",
-            [{"symbol": "NVDA", "date": "2026-08-12", "close": 180}],
+            [{"symbol": "NVDA", "date": "2026-08-11", "close": 180}],
             asset_classes={"NVDA": "equity"},
         )
         repository.finish_run(daily_run, "succeeded")
@@ -272,11 +272,11 @@ def test_current_price_projection_rebuilds_from_successful_confirmations(postgre
             asset_classes={"NVDA": "equity"},
         )
         repository.finish_run(daily_run, "succeeded")
-        quote_run = repository.start_run("robinhood", "quotes", started_at=datetime(2026, 8, 12, 19, 31, tzinfo=UTC))
+        quote_run = repository.start_run("robinhood", "quotes", started_at=datetime(2026, 8, 13, 19, 31, tzinfo=UTC))
         repository.store_quotes(
             quote_run,
             "robinhood",
-            [{"symbol": "NVDA", "observed_at": datetime(2026, 8, 12, 19, 30, tzinfo=UTC), "price": 185}],
+            [{"symbol": "NVDA", "observed_at": datetime(2026, 8, 13, 19, 30, tzinfo=UTC), "price": 185}],
         )
         repository.finish_run(quote_run, "succeeded")
     finally:

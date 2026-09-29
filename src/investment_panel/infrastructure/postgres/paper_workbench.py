@@ -243,6 +243,7 @@ class PaperWorkbenchRepository:
                           shadow.metrics->>'quote_observed_at' AS quote_observed_at,
                           shadow.metrics->'observed_quotes' AS observed_quotes,
                           shadow.metrics->>'last_checked_at' AS last_checked_at,
+                          shadow.metrics->'last_mark_check' AS last_mark_check,
                           shadow.metrics->'fees' AS fees,
                           shadow.metrics->>'exit_reason' AS exit_reason,
                           shadow.metrics->>'entry_deadline' AS entry_deadline

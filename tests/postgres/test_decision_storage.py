@@ -346,13 +346,13 @@ def test_daily_accounting_uses_postgres_volume_and_three_distinct_days(storage):
                 INSERT INTO ops.storage_daily_accounting
                   (sample_day, sampled_at, database_bytes, volume_free_bytes,
                    logical_evidence_bytes, archived_bytes, archive_rows)
-                VALUES (%s, now(), 1000000, %s, 500000, 0, 0)
-            """, [day - timedelta(days=offset), free * 1024**3])
+                VALUES (%s, %s, 1000000, %s, 500000, 0, 0)
+            """, [day - timedelta(days=offset), datetime.now(UTC) - timedelta(days=offset), free * 1024**3])
     report = storage.account(record=True)
     assert report["sample_count"] == 3
     assert report["forecast_confidence"] == "measured"
     assert report["volume_free_bytes"] == 100 * 1024**3
-    assert report["measured_growth_bytes_per_day"] == 5 * 1024**3
+    assert report["measured_growth_bytes_per_day"] == pytest.approx(5 * 1024**3, rel=.001)
     assert report["forecast_30d_free_bytes"] == 0
     assert report["status"] == "degraded"
 

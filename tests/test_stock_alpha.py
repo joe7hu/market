@@ -357,3 +357,45 @@ def test_scheduled_stock_alpha_skips_when_repeated_controls_are_unavailable(
                    "Controls require training outcomes available before each test decision; "
                    "overlapping outcome windows cannot supply those samples."),
     }
+
+
+def test_temporal_preflight_requires_new_decisions_not_relabelled_old_outcomes():
+    from investment_panel.domain.research.stock_alpha import temporal_readiness
+    rows = []
+    for index in range(28):
+        row = _row(index)
+        decision_at = datetime(2026, 8, 24, 22, tzinfo=UTC)
+        end = _window_end(decision_at)
+        row.update(as_of=decision_at, feature_available_at=decision_at - timedelta(minutes=1),
+                   outcome_measured_through=end, outcome_available_at=end + timedelta(hours=1))
+        rows.append(row)
+    cutoff = max(row["outcome_available_at"] for row in rows) + timedelta(days=2)
+    frozen = content_hash(rows)
+    state = temporal_readiness(rows, cutoff=cutoff)
+    assert state["independent_resolved_observations"] == 28
+    assert state["max_eligible_training_labels"] == 0
+    assert state["test_decisions_with_training_labels"] == 0
+    assert state["training_ready_for_new_decisions_at"] is not None
+    controls = build_control_results(rows, cutoff=cutoff)
+    assert controls["randomized_label_returns"] == controls["white_noise_market_returns"] == []
+    assert controls["control_metadata"]["randomized_label"]["runs"] == 0
+    assert controls["control_metadata"]["temporal_readiness"] == state
+    assert content_hash(rows) == frozen
+    # Actual later feature/decision clocks, then actual later resolved outcomes.
+    later = []
+    for index in range(28):
+        decision_at = cutoff + timedelta(days=3)
+        while not is_us_market_day(decision_at.astimezone(MARKET_TZ).date()):
+            decision_at += timedelta(days=1)
+        end = _window_end(decision_at)
+        row = dict(rows[index], as_of=decision_at, opportunity_episode_id=f"forward-{index}",
+                   feature_available_at=decision_at - timedelta(minutes=1),
+                   outcome_measured_through=end, outcome_available_at=end + timedelta(hours=1))
+        later.append(row)
+    later_cutoff = max(row["outcome_available_at"] for row in later) + timedelta(days=2)
+    state = temporal_readiness([*rows, *later], cutoff=later_cutoff)
+    assert state["test_decisions_with_training_labels"] == 28
+    assert state["max_eligible_training_labels"] == 28
+    controls = build_control_results([*rows, *later], cutoff=later_cutoff)
+    assert controls["randomized_label_returns"] and controls["white_noise_market_returns"]
+    assert content_hash(rows) == frozen

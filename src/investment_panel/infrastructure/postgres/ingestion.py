@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 import hashlib
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 from uuid import UUID
 from psycopg.types.json import Jsonb
 
@@ -415,6 +415,7 @@ class IngestionRepository:
         missing_terminal_bars: Sequence[str],
         failed_symbols: Sequence[str],
         instrument_count: int,
+        expected_terminal_bars: Mapping[str, str] | None = None,
     ) -> None:
         """Persist whether this completed daily-bar run meets its session gate."""
 
@@ -424,6 +425,10 @@ class IngestionRepository:
             f"Missing completed {expected_terminal_bar} daily bars: {', '.join(missing)}"
             if missing else None
         )
+        if missing and expected_terminal_bars:
+            failure_detail = "Missing completed daily bars: " + ", ".join(
+                f"{symbol}: {expected_terminal_bars.get(symbol, expected_terminal_bar)}" for symbol in missing
+            )
         with self.runtime.transaction(JOB_PROFILE) as connection:
             result = connection.execute(
                 """
@@ -442,6 +447,7 @@ class IngestionRepository:
                     Jsonb({
                         "terminal_bar_checked": True,
                         "expected_terminal_bar": expected_terminal_bar,
+                        **({"expected_terminal_bars": dict(expected_terminal_bars)} if expected_terminal_bars else {}),
                         "missing_terminal_bars": missing,
                         "failed_symbols": len(failed),
                     }),

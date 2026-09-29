@@ -1670,3 +1670,56 @@ def test_no_challenger_is_explicit_and_does_not_create_one(experiment_context):
     assert "current active options baseline" in result["detail"]
     with runtime.read() as connection:
         assert connection.execute("SELECT count(*) AS count FROM analysis.strategy_revision").fetchone()["count"] == before
+
+
+def test_option_reader_prefers_observation_freshness_and_excludes_future_ticks(experiment_context):
+    from investment_panel.infrastructure.postgres.options_paper_quotes import latest_option_legs
+    runtime, ingestion, now, _parent, _candidate = experiment_context
+    base = now - timedelta(minutes=10)
+    first = _capture(runtime, ingestion, base + timedelta(minutes=8), bid=.6, ask=.62,
+                     available_at=base + timedelta(minutes=8, seconds=5))
+    _capture(runtime, ingestion, base + timedelta(minutes=5), bid=.4, ask=.42,
+             available_at=base + timedelta(minutes=9))
+    _capture(runtime, ingestion, now + timedelta(minutes=1), bid=.8, ask=.82,
+             available_at=now - timedelta(seconds=1))
+    with runtime.read() as connection:
+        identifier = connection.execute("SELECT contract_id FROM raw.option_quote WHERE snapshot_id=%s",
+                                        [first["snapshot_id"]]).fetchone()["contract_id"]
+        selected = latest_option_legs(connection, ticket_legs=[{"contract_id": identifier}],
+                                      as_of=now, source_id="test-experiment", complete_capture_only=True)
+    assert len(selected) == 1
+    assert selected[0]["bid"] == .6
+    assert selected[0]["observed_at"] == base + timedelta(minutes=8)
+
+
+def test_wide_spread_retains_rejected_witness_without_rewriting_accepted_pnl(experiment_context):
+    from investment_panel.infrastructure.postgres.experiment_events import experiment_history
+    runtime, ingestion, now, _parent, _candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    refresh_options_radar(runtime, source_id="test-experiment", code_version="liquidity-witness-test")
+    _capture(runtime, ingestion, now + timedelta(seconds=20))
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))["entered"] == 1
+    with runtime.read() as connection:
+        before = connection.execute("SELECT id, metrics FROM analysis.shadow_trade").fetchone()
+    _capture(runtime, ingestion, now + timedelta(seconds=40), bid=.1, ask=.8)
+    advance_experiment_shadows(runtime, now=now + timedelta(seconds=41))
+    with runtime.read() as connection:
+        after = connection.execute("SELECT metrics FROM analysis.shadow_trade WHERE id=%s", [before["id"]]).fetchone()["metrics"]
+        assert connection.execute("SELECT count(*) AS n FROM app.paper_order").fetchone()["n"] == 0
+    assert after["observed_at"] == before["metrics"]["observed_at"]
+    assert after["current_return"] == before["metrics"]["current_return"]
+    assert after["last_mark_check"]["blockers"]
+    assert after["last_mark_check"]["quotes"][0]["bid"] == .1
+    assert after["last_mark_check"]["accepted"] is False
+    history = experiment_history(runtime, observation_id=str(before["id"]), now=now + timedelta(seconds=42))
+    gap = history["events"][-1]
+    assert gap["kind"] == "mark_gap" and gap["net_pnl"] is None
+    assert gap["evidence"]["quotes"][0]["bid"] == .1
+    assert gap["evidence"]["execution_basis"] == "rejected_quote_not_executable"
+    _capture(runtime, ingestion, now + timedelta(seconds=60), bid=.6, ask=.62)
+    advance_experiment_shadows(runtime, now=now + timedelta(seconds=61))
+    with runtime.read() as connection:
+        recovered = connection.execute("SELECT metrics FROM analysis.shadow_trade WHERE id=%s", [before["id"]]).fetchone()["metrics"]
+    assert recovered["last_mark_check"]["accepted"] is True
+    assert recovered["last_mark_check"]["blockers"] == []
+    assert recovered["current_return"] != before["metrics"]["current_return"]

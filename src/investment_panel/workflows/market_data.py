@@ -14,9 +14,9 @@ from investment_panel.infrastructure.postgres.authority import runtime_for_confi
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.workflows.market import refresh_market_publication, terminal_bar_retry
 from investment_panel.infrastructure.providers.yfinance_provider import YFinanceProvider
-
-
-SOURCE_ID = "daily-market-prices"
+from investment_panel.workflows.daily_dependencies import (
+    SOURCE_ID, recovery_reference_universe, refresh_dependencies, register_daily_source,
+)
 
 
 def run_for_config(
@@ -27,16 +27,13 @@ def run_for_config(
 ) -> dict[str, Any]:
     runtime = runtime_for_config(config)
     repository = IngestionRepository(runtime)
-    repository.register_source(
-        SOURCE_ID,
-        name="Daily market prices",
-        family="market_data",
-        kind="daily_bars",
-        origin="Yahoo chart and Coinbase Exchange daily candles",
-        capabilities={"price_bars": True, "quotes": True, "market_metrics": True},
-    )
+    register_daily_source(repository)
     configured_watchlist = config.watchlist
     universe_rows = monitored_universe(runtime, configured_watchlist)
+    monitored_symbols = {row["symbol"] for row in universe_rows}
+    reference_universe = ([row for row in recovery_reference_universe(runtime, config)
+                           if row["symbol"] not in monitored_symbols] if symbols is None else [])
+    references = refresh_dependencies(runtime, config, reference_universe, count=3)
     requested = {str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()}
     if symbols is not None:
         universe_rows = [row for row in universe_rows if row["symbol"] in requested]
@@ -129,6 +126,7 @@ def run_for_config(
         repository.record_terminal_bar_check(
             run_id,
             expected_terminal_bar=expected_terminal_bar,
+            expected_terminal_bars=(terminal_retry or {}).get("expected_terminal_bars"),
             missing_terminal_bars=missing_terminal_bars,
             failed_symbols=[*errors, *missing_terminal_bars],
             instrument_count=len(universe_rows) - len({*errors, *missing_terminal_bars}),
@@ -157,6 +155,7 @@ def run_for_config(
         repository.record_terminal_bar_check(
             run_id,
             expected_terminal_bar=expected_terminal_bar,
+            expected_terminal_bars=(terminal_retry or {}).get("expected_terminal_bars"),
             missing_terminal_bars=missing_terminal_bars,
             failed_symbols=[*errors, *missing_terminal_bars],
             instrument_count=len(universe_rows) - len({*errors, *missing_terminal_bars}),
@@ -169,13 +168,14 @@ def run_for_config(
                 repository.record_terminal_bar_check(
                     run_id,
                     expected_terminal_bar=expected_terminal_bar,
+                    expected_terminal_bars=market.get("expected_terminal_bars"),
                     missing_terminal_bars=missing_terminal_bars,
                     failed_symbols=[*errors, *missing_terminal_bars],
                     instrument_count=len(universe_rows) - len({*errors, *missing_terminal_bars}),
                 )
     if terminal_check_at is not None:
         terminal_errors = {
-            symbol: f"Missing completed {expected_terminal_bar} daily bar"
+            symbol: f"Missing completed {((terminal_retry or {}).get('expected_terminal_bars') or {}).get(symbol, expected_terminal_bar)} daily bar"
             for symbol in missing_terminal_bars if symbol not in errors
         }
     downstream_failed = market.get("status") in {"failed", "partial"}
@@ -183,10 +183,11 @@ def run_for_config(
     if retry_after is None and terminal_retry is not None:
         retry_after = terminal_retry.get("retry_after_seconds")
     return {
-        "status": "failed" if errors and not bars else "partial" if errors or terminal_errors or metric_errors or downstream_failed else "ok",
+        "status": "failed" if errors and not bars else "partial" if errors or terminal_errors or metric_errors or downstream_failed or references["status"] != "ok" else "ok",
         "source_status": "failed" if errors and not bars else "partial" if errors or terminal_errors or metric_errors else "ok",
         "downstream_status": market.get("status"),
         "database": "postgresql",
+        "recovery_references": references,
         "run_id": str(run_id),
         "symbols": len(universe_rows),
         "benchmark_symbols": [row["symbol"] for row in universe_rows],

@@ -5,9 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from investment_panel.core.market_time import market_timezone_for_symbol
 from investment_panel.domain.decision import latest_completed_market_day
-from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.infrastructure.postgres.market_analysis import (
     build_market_publication,
     load_market_inputs,
@@ -15,6 +13,7 @@ from investment_panel.infrastructure.postgres.market_analysis import (
 )
 from investment_panel.infrastructure.postgres.monitored_universe import monitored_universe
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.workflows.daily_dependencies import missing_dates
 
 
 TERMINAL_BAR_RETRY_SECONDS = 300
@@ -29,32 +28,8 @@ def terminal_bar_retry(
     universe = monitored_universe(runtime, configured_watchlist or [])
     if universe and not any(row["symbol"] == "QQQ" for row in universe):
         universe.append({"symbol": "QQQ", "asset_class": "etf"})
-    eligible = [
-        row for row in universe
-        if row["asset_class"] in {"equity", "etf"}
-        and market_timezone_for_symbol(str(row["symbol"])) == "America/New_York"
-    ]
-    if not eligible:
-        return None
-    symbols = [str(row["symbol"]).upper() for row in eligible]
-    with runtime.read() as connection:
-        instruments = {
-            str(row["symbol"]).upper(): int(row["id"])
-            for row in connection.execute(
-                "SELECT id, symbol FROM catalog.instrument WHERE symbol = ANY(%s)", [symbols],
-            ).fetchall()
-        }
-        bars = confirmed_daily_bars(
-            connection,
-            instruments.values(),
-            as_of=as_of,
-            trading_dates=[expected],
-            require_session_close=True,
-        )
-    missing = [
-        symbol for symbol in symbols
-        if not bars.get(instruments.get(symbol, -1), [])
-    ]
+    missing_by_symbol = missing_dates(runtime, universe, now=as_of)
+    missing = sorted(missing_by_symbol)
     if not missing:
         return None
     return {
@@ -62,6 +37,8 @@ def terminal_bar_retry(
         "reason": "terminal_bar_retry",
         "expected_terminal_bar": expected.isoformat(),
         "missing_terminal_bars": sorted(missing),
+        **({"expected_terminal_bars": {symbol: dates[0].isoformat() for symbol, dates in missing_by_symbol.items()}}
+           if any(row["asset_class"] == "crypto" for row in universe) else {}),
         "retry_after_seconds": TERMINAL_BAR_RETRY_SECONDS,
     }
 
@@ -104,7 +81,7 @@ def refresh_market_publication(
         retry = terminal_bar_retry(runtime, configured_watchlist, final_as_of)
         if retry is not None:
             return retry
-        if latest_completed_market_day(final_as_of) == latest_completed_market_day(as_of):
+        if (latest_completed_market_day(final_as_of), final_as_of.astimezone(UTC).date()) == (latest_completed_market_day(as_of), as_of.astimezone(UTC).date()):
             return persist_market_publication(runtime, as_of=as_of, draft=draft)
         as_of = final_as_of
     return {

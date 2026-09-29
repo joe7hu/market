@@ -125,7 +125,7 @@ def test_premature_legacy_winter_or_normal_day_1300_bar_stays_unconfirmed(price_
     ("7203.T", "equity", "daily_bars", "Asia/Tokyo"),
     ("BTC-USD", "crypto", "daily_bars", "UTC"),
 ])
-def test_existing_daily_quote_foreign_and_non_equity_clock_contracts_are_preserved(price_ingestion, symbol, asset_class, kind, expected_zone):
+def test_daily_clocks_preserve_equity_sessions_and_complete_crypto_utc_buckets(price_ingestion, symbol, asset_class, kind, expected_zone):
     from zoneinfo import ZoneInfo
 
     source = f"test-clock-compatibility-{kind}"
@@ -140,7 +140,8 @@ def test_existing_daily_quote_foreign_and_non_equity_clock_contracts_are_preserv
     with price_ingestion.runtime.read() as connection:
         instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [symbol]).fetchone()["id"]
         current = connection.execute("SELECT observed_at, price FROM raw.current_price_at(%s, ARRAY[%s::bigint])", [datetime.now(UTC), instrument_id]).fetchone()
-        assert current == {"observed_at": datetime(2026, 1, 2, 16, tzinfo=ZoneInfo(expected_zone)), "price": 500}
+        expected = datetime(2026, 1, 3, 0, tzinfo=UTC) if asset_class == "crypto" else datetime(2026, 1, 2, 16, tzinfo=ZoneInfo(expected_zone))
+        assert current == {"observed_at": expected, "price": 500}
 
 
 def test_corrected_early_close_values_reach_current_analytics_and_keep_old_cutoffs(price_ingestion, migrated_postgres_dsn, monkeypatch):
