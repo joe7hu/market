@@ -89,7 +89,7 @@ def forecast_growth(
         ) / elapsed_days
     return {
         "forecast_confidence": "measured" if measured else "provisional",
-        "forecast_growth_bytes_per_day": ceil(rate) if measured else int(rate),
+        "forecast_growth_bytes_per_day": ceil(rate),
         "measured_growth_bytes_per_day": ceil(rate) if measured else None,
         "forecast_growth_basis": "max_elapsed_endpoint_and_recent_growth"
         if measured

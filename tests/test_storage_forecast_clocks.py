@@ -1,6 +1,7 @@
 """Forecast scenarios specified before changing storage accounting."""
 
 from datetime import UTC, datetime, timedelta
+from math import ceil
 
 from investment_panel.domain.storage_forecast import forecast_growth
 
@@ -27,7 +28,7 @@ def test_two_days_and_midnight_slivers_remain_provisional():
         samples([now - timedelta(minutes=2), now], [31 * GIB, 30 * GIB])
     )
     assert result["forecast_confidence"] == "provisional"
-    assert result["forecast_growth_bytes_per_day"] == int(0.7 * GIB)
+    assert result["forecast_growth_bytes_per_day"] == ceil(0.7 * GIB)
     assert result["measured_growth_bytes_per_day"] is None
 
 
