@@ -9,7 +9,7 @@ from typing import Any
 from investment_panel.infrastructure.postgres.agent_process import jsonable
 from investment_panel.infrastructure.postgres.options_paper_ledger import paper_fill_totals, reconciled_exit_pnl
 
-CONTEXT_VERSION = "option-postmortem-evidence-v2"
+CONTEXT_VERSION = "option-postmortem-evidence-v3"
 
 
 def evidence_context(connection: Any, decision_id: Any, cutoff: datetime) -> dict[str, Any]:
@@ -30,7 +30,9 @@ def evidence_context(connection: Any, decision_id: Any, cutoff: datetime) -> dic
                  'multiplier', contract.multiplier, 'deliverable_key', contract.deliverable_key,
                  'style', contract.style, 'settlement', contract.settlement) AS contract,
                jsonb_build_object('id', strategy.id, 'strategy_key', strategy.strategy_key,
-                 'revision', strategy.revision, 'parameters', strategy.parameters) AS strategy,
+                 'revision', strategy.revision, 'parameters', strategy.parameters,
+                 'implementation_id', strategy.implementation_id,
+                 'implementation_version', strategy.implementation_version) AS strategy,
                thesis.thesis AS entry_thesis
         FROM analysis.decision decision
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
@@ -50,6 +52,18 @@ def evidence_context(connection: Any, decision_id: Any, cutoff: datetime) -> dic
     context = {key: values.pop(key) for key in ("outcome", "candidate", "contract", "strategy", "entry_thesis")}
     context.update(context_version=CONTEXT_VERSION, decision=values, review_cutoff=cutoff,
                    paper_executions=[], evidence_gaps=[], evidence_refs=[{"type": "decision", "id": str(decision_id)}])
+    # A proposal reviews historical evidence but targets an explicitly supplied
+    # current baseline. It does not attribute the old outcome to the new code.
+    baseline = connection.execute("""
+        SELECT id, strategy_key, revision, parameters, authority_group,
+               implementation_id, implementation_version
+        FROM analysis.strategy_revision
+        WHERE authority_group = 'options-radar-core' AND status = 'active'
+          AND implementation_id = 'options_radar'
+          AND implementation_version = 'option-professional-v3-ticket'
+          AND created_at <= %s AND promoted_at <= %s
+        """, [cutoff, cutoff]).fetchone()
+    context["proposal_base"] = dict(baseline) if baseline else None
     outcome = context["outcome"] or {}
     context["attribution"] = {key: outcome.get(key) for key in (
         "stock_move_effect", "iv_effect", "theta_effect", "spread_effect", "unexplained_effect",

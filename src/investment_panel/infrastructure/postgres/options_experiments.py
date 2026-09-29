@@ -290,6 +290,12 @@ def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50, 
                 leg.get("observed_at") is not None and later_than < leg["observed_at"] <= leg["quote_time"] <= now
                 and leg.get("multiplier") == 100 for leg in legs
             )
+            metrics["last_mark_check"] = {
+                "checked_at": now.isoformat(), "accepted": ordered and not policy["blockers"],
+                "blockers": list(policy["blockers"]) or ([] if ordered else ["later_complete_quote_required"]),
+                "quotes": legs,
+            }
+            connection.execute("UPDATE analysis.shadow_trade SET metrics = %s WHERE id = %s", [_jsonb(metrics), row["id"]])
             if row["status"] == "pending":
                 waiting_reason = ("later_complete_quote_required" if not ordered else
                                   policy["blockers"][0] if policy["blockers"] else "limit_not_reached")
@@ -326,7 +332,7 @@ def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50, 
                 )
                 if is_market_open(now) and not waiting_for_next_tick:
                     record_experiment_event(connection, shadow_id=row["id"], kind="mark_gap", observed_at=now,
-                        quotes=[], reason=policy["blockers"][0] if policy["blockers"] else "later_complete_quote_required")
+                        quotes=legs, reason=policy["blockers"][0] if policy["blockers"] else "later_complete_quote_required")
                 expiration = ticket.get("expiration")
                 if expiration and now.date().isoformat() > str(expiration)[:10]:
                     connection.execute("UPDATE analysis.shadow_trade SET status = 'unmeasurable', pending_entry_reason = 'no_executable_exit_before_expiry' WHERE id = %s", [row["id"]])
@@ -334,8 +340,10 @@ def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50, 
                 continue
             price = package_price(legs, phase="exit")
             if price is None:
+                metrics["last_mark_check"].update(accepted=False, blockers=["liquidation_price_unavailable"])
+                connection.execute("UPDATE analysis.shadow_trade SET metrics = %s WHERE id = %s", [_jsonb(metrics), row["id"]])
                 record_experiment_event(connection, shadow_id=row["id"], kind="mark_gap", observed_at=now,
-                    quotes=[], reason="liquidation_price_unavailable")
+                    quotes=legs, reason="liquidation_price_unavailable")
                 continue
             fees = float(metrics["entry_fees"]) + FEE_PER_CONTRACT_LEG * len(legs)
             net_return = ((price - float(row["entry_price"])) * 100 - fees) / (float(row["entry_price"]) * 100)

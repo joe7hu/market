@@ -46,6 +46,7 @@ def latest_option_legs(
           ON generation.id = quote.capture_generation_id
         WHERE quote.contract_id = ANY(%s::bigint[])
           AND quote.available_at <= %s
+          AND quote.observed_at <= %s
           AND (%s::text IS NULL OR snapshot.source_id = %s)
           AND (NOT %s OR (snapshot.capture_state = 'complete'
                AND (quote.capture_generation_id IS NULL OR generation.capture_state = 'complete')))
@@ -58,9 +59,9 @@ def latest_option_legs(
               AND generation.capture_finished_at <= %s
             )
           )
-        ORDER BY quote.contract_id, quote.available_at DESC, quote.observed_at DESC, quote.id DESC
+        ORDER BY quote.contract_id, quote.observed_at DESC, quote.available_at DESC, quote.id DESC
         """,
-        [[int(value) for value in contract_ids if value is not None], as_of, source_id, source_id, complete_capture_only, as_of],
+        [[int(value) for value in contract_ids if value is not None], as_of, as_of, source_id, source_id, complete_capture_only, as_of],
     ).fetchall()
     by_contract = {int(row["contract_id"]): dict(row) for row in rows}
     normalized: list[dict[str, Any]] = []

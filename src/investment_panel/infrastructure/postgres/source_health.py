@@ -43,6 +43,7 @@ def overdue_source_refresh_jobs(
                     SELECT max(run.finished_at) AS last_success_at
                     FROM ingest.run AS run
                     WHERE run.source_id = source.id
+                      AND run.capability <> 'price_bar_dependencies'
                       AND run.status = 'succeeded'
                 ) AS latest ON true
                 WHERE source.operational_state = 'active'
@@ -106,6 +107,7 @@ def source_health_blockers(
                 SELECT run.status
                 FROM ingest.run AS run
                 WHERE run.source_id = source.id
+                      AND run.capability <> 'price_bar_dependencies'
                   {capability_filter}
                 ORDER BY run.started_at DESC, run.id DESC
                 LIMIT 1
@@ -114,6 +116,7 @@ def source_health_blockers(
                 SELECT max(run.finished_at) AS last_success_at
                 FROM ingest.run AS run
                 WHERE run.source_id = source.id
+                      AND run.capability <> 'price_bar_dependencies'
                   AND run.status = 'succeeded'
                   {capability_filter}
             ) AS success ON true
@@ -156,14 +159,15 @@ WITH eligible_run AS (
     SELECT run.*
     FROM ingest.run run
     JOIN ingest.source source ON source.id = run.source_id
-    WHERE source.family NOT IN ('research', 'social', 'broker')
+    WHERE run.capability <> 'price_bar_dependencies'
+      AND (source.family NOT IN ('research', 'social', 'broker')
        OR (source.family = 'research' AND source.capabilities ? run.capability)
        OR (source.id = 'birdclaw_primary_tweets'
            AND (run.capability = 'content' OR source.capabilities ? run.capability))
        OR (source.id = 'arco' AND run.capability = 'content')
        OR (source.id = 'ibkr' AND run.capability IN ('option_quotes', 'broker_sync'))
        OR (source.id = 'moomoo' AND run.capability = 'broker_sync')
-       OR (source.id = 'robinhood' AND run.capability = 'option_quotes')
+       OR (source.id = 'robinhood' AND run.capability = 'option_quotes'))
 ), latest_run AS (
     SELECT DISTINCT ON (run.source_id)
            run.source_id, run.capability, run.status, run.started_at,

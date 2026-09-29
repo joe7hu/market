@@ -43,3 +43,17 @@ def test_future_and_unknown_mark_clocks_cannot_claim_current_valuation():
     for clock in [None, "bad", "2026-09-22T14:00:00Z", "2026-09-21T14:00:00"]:
         result = observation_lifecycle({"status": "entered", "quote_observed_at": clock}, now=now)
         assert result["mark_status"] == "overdue"
+
+
+def test_rejected_liquidity_is_not_described_as_missing_quote_data():
+    now = datetime(2026, 9, 21, 14, tzinfo=UTC)
+    row = {"status": "entered", "quote_observed_at": "2026-09-18T20:00:00Z",
+           "entry_price": .5, "net_return": .1,
+           "last_mark_check": {"checked_at": now.isoformat(), "accepted": False,
+                               "blockers": ["option_spread_too_wide"], "quotes": [{"bid": .1, "ask": .8}]}}
+    result = observation_lifecycle(row, now=now)
+    assert result["mark_status"] == "overdue"
+    assert result["reason"] == "option_spread_too_wide"
+    assert result["net_pnl"] == 5
+    assert "rejected" in result["required_next_action"]
+    assert "last accepted" in result["required_next_action"]

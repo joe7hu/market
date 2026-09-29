@@ -194,7 +194,7 @@ agents:
     provider: codex
     model: gpt-6-luna
     reasoning_effort: low
-    auto_run_seconds: 0
+    auto_run_seconds: 86400
     max_runs_per_day: 1
     experiment_enabled: false
     experiment_auto_run_seconds: 86400

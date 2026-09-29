@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 import json
-import os
 import time
 from typing import Any
 
@@ -21,6 +20,9 @@ from investment_panel.core.robinhood_options import RobinhoodClient, collect_rob
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.options import register_option_source
+from investment_panel.infrastructure.postgres.recovery_universe import (
+    detector_symbol_limit as _detector_symbol_limit, detector_universe as _detector_universe,
+)
 from investment_panel.infrastructure.postgres.option_events import OptionEventRepository
 from investment_panel.infrastructure.postgres.options_history_policy import OptionHistoryPolicyRepository
 from investment_panel.infrastructure.postgres.options_recovery_cohorts import RecoveryCohortRepository
@@ -252,34 +254,6 @@ def _detector_collection_deadline() -> float | None:
     if timeout_seconds is None:
         return None
     return time.monotonic() + max(1, int(timeout_seconds) - 15)
-
-
-def _detector_symbol_limit(configured_limit: int) -> int:
-    """Use the normal provider cap, with the documented operator override."""
-
-    raw = os.environ.get("MARKET_ROBINHOOD_MAX_SYMBOLS")
-    try:
-        override = int((raw or "").strip())
-    except (TypeError, ValueError):
-        override = 0
-    return max(1, override if override > 0 else int(configured_limit))
-
-
-def _detector_universe(
-    ingestion: IngestionRepository,
-    repository: OptionEventRepository,
-    *,
-    configured: list[dict[str, Any]],
-    limit: int,
-) -> tuple[list[str], list[str]]:
-    """Build one bounded detector denominator with current events retained."""
-
-    active_event_symbols = repository.current_event_symbols(limit=limit)
-    prioritized = [{"symbol": symbol} for symbol in active_event_symbols]
-    prioritized.extend(configured)
-    discovered = ingestion.option_universe(prioritized, limit=limit)
-    symbols = list(dict.fromkeys([*active_event_symbols, *discovered]))[:limit]
-    return symbols, active_event_symbols
 
 
 def _p95(values: list[float]) -> float | None:

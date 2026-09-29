@@ -49,7 +49,7 @@ PRIORITY_JOBS = FAST_DATABASE_JOBS | {
 DECISION_PIPELINE_SUCCESSORS = {
     "update_market_data": "refresh_symbol_features",
     "refresh_symbol_features": "refresh_decision_models",
-    "refresh_assessment_inputs": "refresh_decision_models",
+    "refresh_assessment_inputs": "refresh_symbol_features",
 }
 DECISION_PIPELINE_UPSTREAMS: dict[str, tuple[str, ...]] = {}
 for _upstream, _successor in DECISION_PIPELINE_SUCCESSORS.items():
@@ -60,7 +60,7 @@ for _upstream, _successor in DECISION_PIPELINE_SUCCESSORS.items():
 # terminal-bar retry into a new snapshot from yesterday's facts.
 DECISION_PIPELINE_UPSTREAMS["refresh_market_publication"] = ("update_market_data",)
 # The startup chain is linear. Assessment quotes retain their regular cadence
-# and independently republish decisions after each successful refresh.
+# and rebuild features before republishing decisions after a successful refresh.
 DECISION_PIPELINE_STAGES = ("update_market_data", "refresh_symbol_features", "refresh_decision_models")
 TERMINAL_BAR_RETRY_JOBS = {
     "update_market_data": "update_market_data",
@@ -185,6 +185,10 @@ def _recurring_delay_seconds(
         reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(UTC)
         target = reference + timedelta(seconds=interval)
         return max(0.0, (_next_market_open_at(target) - reference).total_seconds())
+    if job == "refresh_assessment_inputs":
+        reference = (reference_time or datetime.now(UTC)).astimezone(UTC)
+        boundary = reference.replace(hour=0, minute=0, second=15, microsecond=0) + timedelta(days=1)
+        return min(float(interval), (boundary - reference).total_seconds())
     if job not in SLOT_ALIGNED_JOBS:
         return float(interval)
     reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(MARKET_TZ)
@@ -306,6 +310,11 @@ def _schedule_pipeline_successor(
     """Run a refreshed decision input through its dependent decision stages."""
 
     successor = DECISION_PIPELINE_SUCCESSORS.get(job)
+    # Respect explicit stage disablement without freezing quote publication.
+    # Enabled feature construction remains a prerequisite; disabled stages are
+    # not silently recreated, and downstream evidence gates still fail closed.
+    while successor is not None and successor not in next_due:
+        successor = DECISION_PIPELINE_SUCCESSORS.get(successor)
     source_ready = (
         bool(result)
         and result.get("status") in {"succeeded", "partial"}

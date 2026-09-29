@@ -46,7 +46,7 @@ class StrategyLearningRepository:
             return {"strategy_proposals": 0, "strategy_backtests": 0, "strategy_forward_tests": 0}
         source = connection.execute(
             """
-            SELECT task.id, decision.strategy_revision_id
+            SELECT task.id, task.request, decision.strategy_revision_id
             FROM analysis.agent_task task
             LEFT JOIN analysis.decision decision ON decision.id = task.decision_id
             WHERE task.id = %s AND task.task_kind = 'option_postmortem'
@@ -70,6 +70,21 @@ class StrategyLearningRepository:
                 }
             return {"strategy_proposals": 0, **self._evaluate(connection, existing["id"])}
         base = self._resolve_base(connection, source["strategy_revision_id"])
+        target = dict((dict(source["request"] or {}).get("context") or {}).get("proposal_base") or {})
+        if target:
+            # Only a new, immutable request shown to the agent can target the
+            # current implementation. Never rebind an old proposal or decision.
+            current = connection.execute("""
+                SELECT id, strategy_key, revision, parameters, authority_group,
+                       implementation_id, implementation_version
+                FROM analysis.strategy_revision WHERE id = %s AND status = 'active'
+                  AND authority_group = 'options-radar-core'
+                  AND implementation_id = %s AND implementation_version = %s
+                FOR SHARE
+                """, [target.get("id"), OPTIONS_IMPLEMENTATION_ID, OPTIONS_IMPLEMENTATION_VERSION]).fetchone()
+            if current is None or any(current[key] != target.get(key) for key in current):
+                raise ValueError("proposal baseline is no longer active or differs from the reviewed request")
+            base = current
         digest = hashlib.sha256(
             f"{postmortem_task_id}:{json.dumps(changes, sort_keys=True)}".encode()
         ).hexdigest()[:10]
@@ -121,6 +136,8 @@ class StrategyLearningRepository:
         result = {
             "status": "backtest_required",
             "source_postmortem_id": postmortem_task_id,
+            "source_strategy_revision_id": source["strategy_revision_id"],
+            "proposal_base_revision_id": base["id"],
             "strategy_version": str(base["strategy_key"]),
             "proposed_strategy_version": proposed_key,
             "proposed_parameter_changes": changes,

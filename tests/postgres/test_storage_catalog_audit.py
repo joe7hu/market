@@ -1,4 +1,5 @@
 """Adversarial catalog, index, and capacity-accounting PostgreSQL scenarios."""
+from math import ceil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -84,7 +85,7 @@ def test_capacity_accounting_never_labels_fallback_or_file_allocation_as_measure
     assert report["sample_count"] == 0
     assert report["forecast_confidence"] == "provisional"
     assert report["measured_growth_bytes_per_day"] is None
-    assert report["forecast_growth_bytes_per_day"] == int(0.7 * 1024**3)
+    assert report["forecast_growth_bytes_per_day"] == ceil(0.7 * 1024**3)
     assert report["tracked_evidence_allocated_bytes"] > 0
     assert "logical_evidence_bytes" not in report
     assert "logical_evidence_growth_bytes_per_day" not in report

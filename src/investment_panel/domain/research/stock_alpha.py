@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
@@ -298,6 +299,37 @@ def walk_forward(
     return artifact
 
 
+def temporal_readiness(
+    observations: Iterable[Mapping[str, Any]], *, cutoff: datetime,
+    min_train: int = 20, purge: timedelta = timedelta(days=1), embargo: timedelta = timedelta(days=1),
+) -> dict[str, Any]:
+    """Describe causal label supply without changing eligibility or clocks.
+
+    O(n log n), even when production contains many resolved observations. This
+    is a collection preflight, not a validation gate, forecast, or promotion.
+    """
+    if isinstance(min_train, bool) or min_train < 1:
+        raise ValueError("minimum training observations must be positive")
+    reference = _aware(cutoff)
+    rows = [row for row in independent_observations(observations, cutoff=reference)
+            if row["outcome_available_at"] <= reference and row["feature_available_at"] <= row["as_of"]]
+    eligible_at = sorted(max(row["outcome_available_at"] + purge,
+                             row["as_of"] + embargo, row["feature_available_at"] + purge) for row in rows)
+    counts = [bisect_right(eligible_at, row["as_of"]) for row in rows]
+    labels = sorted(row["outcome_available_at"] for row in rows)
+    return {
+        "independent_resolved_observations": len(rows),
+        "test_decisions_with_training_labels": sum(count > 0 for count in counts),
+        "test_decisions_with_minimum_training_labels": sum(count >= min_train for count in counts),
+        "max_eligible_training_labels": max(counts, default=0),
+        "minimum_training_labels": min_train,
+        "earliest_label_available_at": labels[0].isoformat() if labels else None,
+        "latest_label_available_at": labels[-1].isoformat() if labels else None,
+        "training_ready_for_new_decisions_at": eligible_at[min_train - 1].isoformat() if len(eligible_at) >= min_train else None,
+        "state": "causal_test_evidence_present" if any(count > 0 for count in counts) else "waiting_for_later_test_outcomes",
+    }
+
+
 def build_control_results(
     observations: Iterable[Mapping[str, Any]], *, cutoff: datetime, repeats: int = 8,
     min_train: int | None = None, fold_size: int | None = None, min_cohort: int | None = None,
@@ -375,6 +407,12 @@ def build_control_results(
         "randomized_label": {"runs": 0, "sample_count": 0, "path_count": 0, "input_hashes": []},
         "white_noise_market": {"runs": 0, "sample_count": 0, "path_count": 0, "input_hashes": []},
     }
+    readiness = temporal_readiness(source_rows, cutoff=cutoff)
+    metadata["temporal_readiness"] = readiness
+    if readiness["max_eligible_training_labels"] == 0:
+        # Every original test clock predates its available training labels.
+        # Eight randomizations cannot create evidence that did not exist.
+        return {"randomized_label_returns": [], "white_noise_market_returns": [], "control_metadata": metadata}
     for _ in range(repeats):
         shuffled = list(labels)
         generator.shuffle(shuffled)

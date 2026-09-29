@@ -40,7 +40,7 @@ def record_experiment_event(
         raise ValueError("a mark gap is not a zero return")
     evidence = {"quotes": quotes, "quantity": 1, "multiplier": 100,
                 "basis": "one_contract_liquidation_after_entry_and_exit_fees",
-                "execution_basis": "later_complete_quote_worst_side"}
+                "execution_basis": "rejected_quote_not_executable" if kind == "mark_gap" else "later_complete_quote_worst_side"}
     # Same quote cannot create 60 new observations from 60 worker ticks.
     # Availability/ingestion time and database IDs can change on a recapture
     # of the same provider tick. They are evidence, not a new mark identity.
@@ -52,6 +52,9 @@ def record_experiment_event(
         witness["observed_at"] = clock.isoformat() if clock else None
     identity = {"kind": kind, "quotes": sorted(witnesses, key=lambda item: json.dumps(item, default=str, sort_keys=True)), "reason": reason}
     if kind == "mark_gap":
+        # Retain a witness per bounded gap bucket, not a duplicate event for
+        # every illiquid provider tick. The current check retains the latest.
+        identity["quotes"] = []
         identity["bucket"] = int(observed_at.timestamp()) // 300
         # A recovery followed by another outage in the same five-minute
         # bucket is a new gap. Deduplicate repeated checks, not transitions.
@@ -101,6 +104,16 @@ def observation_lifecycle(row: dict[str, Any], *, now: datetime) -> dict[str, An
             if result["mark_status"] == "overdue" else
             "The paper worker is managing the frozen stop, profit target and time exit. No new entry instruction applies."
         )
+        check = dict(row.get("last_mark_check") or {})
+        checked_at = _time(check.get("checked_at"))
+        blockers = list(check.get("blockers") or [])
+        if checked_at is not None and checked_at <= now and check.get("accepted") is False and blockers:
+            result["reason"] = str(blockers[0])
+            result["required_next_action"] = (
+                f"The latest quote was rejected by execution policy ({blockers[0]}). "
+                "The displayed P&L is the last accepted executable mark, not a current executable valuation. "
+                "The worker will reevaluate new quotes without relaxing spread, size, freshness or exit rules."
+            )
     elif state == "closed":
         result["reason"] = row.get("exit_reason") or "position_closed"
         result["mark_status"] = "realized"

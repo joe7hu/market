@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, Callable
 
 from investment_panel.settings import AppConfig, public_config_payload
+from investment_panel.core.job_policy import option_agent_interval
 from investment_panel.infrastructure.postgres.agents import AgentRepository
 from investment_panel.infrastructure.postgres.agent_experiments import AgentExperimentRepository
 from investment_panel.infrastructure.postgres.authority import database_url, runtime_for_config
@@ -30,7 +30,7 @@ class AgentActions:
             "workflows": overview["workflows"],
             "cost": overview["cost"],
             "materialization": overview["materialization"],
-            "scheduler": {"agent_refresh_seconds": _scheduler_agent_seconds(self.config)},
+            "scheduler": {"agent_refresh_seconds": option_agent_interval(self.config)},
         }
 
     def queue_analysis(self, ticker: str, *, prompt: str = "") -> dict[str, Any]:
@@ -59,16 +59,6 @@ class AgentActions:
         """Return stored strategy evidence and explicit review feedback."""
 
         return research_summary(self.repository.runtime, self.config)
-
-
-def _scheduler_agent_seconds(config: AppConfig) -> int:
-    configured = int(config.agents.option_agent.auto_run_seconds or 0)
-    if configured > 0:
-        return configured
-    try:
-        return int(os.environ.get("MARKET_AGENT_REFRESH_SECONDS", "0") or 0)
-    except ValueError:
-        return 0
 
 
 def _option_agent_settings(config: AppConfig) -> Any:

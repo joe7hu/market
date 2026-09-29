@@ -196,7 +196,7 @@ class OptionAgentConfig:
     provider: str = "codex"
     model: str = "gpt-5.6-luna"
     reasoning_effort: str = "high"
-    # In-app scheduler cadence override (0 = use MARKET_AGENT_REFRESH_SECONDS / default).
+    # Automatic cadence (0 = paused); an explicit MARKET_AGENT_REFRESH_SECONDS overrides it.
     auto_run_seconds: int = 0
     max_runs_per_day: int = 1
     # Paired DeepSeek/Luna study.  It is disabled by default because it creates

@@ -24,6 +24,7 @@ from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 
 from investment_panel.domain.decision import MARKET_TZ, is_us_market_day
+from investment_panel.domain.storage_forecast import forecast_growth
 from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
 from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime, JOB_PROFILE
 from investment_panel.infrastructure.postgres.storage_guard import storage_capacity
@@ -157,38 +158,16 @@ class StorageArchiveService:
                 SELECT * FROM ops.storage_daily_accounting
                 ORDER BY sample_day DESC LIMIT 30
             """).fetchall()]
-        samples.reverse()
-        rate = None
-        logical_rate = None
-        throughput = None
-        confidence = "provisional"
-        if len(samples) >= 3:
-            first, last = samples[0], samples[-1]
-            days = (last["sample_day"] - first["sample_day"]).days
-            if days > 0:
-                rate = max(0, int(first["volume_free_bytes"]) - int(last["volume_free_bytes"]),
-                           int(last["database_bytes"]) - int(first["database_bytes"])) / days
-                throughput = max(0, int(last["archived_bytes"]) - int(first["archived_bytes"])) / days
-                logical_rate = (int(last["logical_evidence_bytes"]) -
-                                int(first["logical_evidence_bytes"])) / days
-                confidence = "measured"
-        # Until three distinct production days exist, use the existing history
-        # growth estimate. Reusable PostgreSQL pages never increase free space.
-        if rate is None:
-            rate = 0.7 * 1024**3
+        growth = forecast_growth(samples, as_of=now)
+        rate = growth["forecast_growth_bytes_per_day"]
         forecast = max(0, int(usage.free - 30 * rate))
         reserve = 15 * 1024**3
         return {
             "status": "degraded" if forecast <= reserve else "ok",
             "path": str(path), "sampled_at": now.isoformat(), "sample_count": len(samples),
-            "forecast_confidence": confidence, "database_bytes": database_bytes,
+            **growth, "database_bytes": database_bytes,
             "volume_free_bytes": usage.free, "tracked_evidence_allocated_bytes": logical,
             "archived_logical_bytes": int(archive["bytes"]), "archive_rows": int(archive["rows"]),
-            "archive_throughput_bytes_per_day": None if throughput is None else int(throughput),
-            "tracked_evidence_allocated_growth_bytes_per_day": None if logical_rate is None else int(logical_rate),
-            "measured_growth_bytes_per_day": int(rate) if confidence == "measured" else None,
-            "forecast_growth_bytes_per_day": int(rate),
-            "forecast_growth_basis": "observed_endpoint_max" if confidence == "measured" else "fallback_0.7_GiB_per_day",
             "forecast_30d_free_bytes": forecast,
             "tracked_evidence_bytes_basis": "allocated_heap_toast_and_indexes_not_logical_payload_size",
             "accounting_column_note": "logical_evidence_bytes is the legacy database column name for allocated files",

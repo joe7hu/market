@@ -186,10 +186,10 @@ def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
     monkeypatch.setattr(
         job_policy,
         "load_config",
-        lambda: typed_config(raw={"agents": {"option_agent": {"enabled": True, "auto_run_seconds": 0}}}),
+        lambda: typed_config(raw={"agents": {"option_agent": {"enabled": True, "auto_run_seconds": 86400}}}),
     )
     intervals = scheduler.job_intervals()
-    assert intervals["run_option_agents"] == 86400  # daily by default (Phase 2c)
+    assert intervals["run_option_agents"] == 86400  # the shipped cadence, not an override of an explicit pause
 
 
 def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:

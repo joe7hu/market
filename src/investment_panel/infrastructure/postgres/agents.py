@@ -188,7 +188,7 @@ class AgentRepository:
                 SELECT outcome.decision_id, outcome.maturity_state
                 FROM analysis.option_outcome outcome
                 LEFT JOIN LATERAL (
-                    SELECT task.status, task.created_at, task.updated_at, task.validation_detail
+                    SELECT task.status, task.created_at, task.updated_at, task.validation_detail, task.request
                     FROM analysis.agent_task task
                     WHERE task.decision_id = outcome.decision_id AND task.task_kind = 'option_postmortem'
                       AND task.schema_version = %s ORDER BY task.created_at DESC, task.id DESC LIMIT 1
@@ -200,6 +200,13 @@ class AgentRepository:
                         AND task.status IN ('queued', 'running')
                   )
                   AND (latest.created_at IS NULL
+                       OR (latest.status = 'completed' AND
+                           latest.request #>> '{context,proposal_base,id}' IS DISTINCT FROM (
+                               SELECT baseline.id::text FROM analysis.strategy_revision baseline
+                               WHERE baseline.authority_group = 'options-radar-core' AND baseline.status = 'active'
+                                 AND baseline.implementation_id = 'options_radar'
+                                 AND baseline.implementation_version = 'option-professional-v3-ticket'
+                           ))
                        OR (latest.status = 'failed' AND latest.updated_at < now() - interval '1 hour')
                        OR (latest.status = 'completed' AND greatest(outcome.updated_at,
                            (SELECT max(paper.updated_at) FROM app.paper_order paper WHERE paper.decision_id = outcome.decision_id),

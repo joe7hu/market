@@ -62,3 +62,48 @@ def test_postmortem_evidence_survives_queue_batch_and_new_evidence_reopens_revie
             assert connection.execute("SELECT count(*) AS n FROM analysis.strategy_revision WHERE status = 'candidate'").fetchone()["n"] == 0
     finally:
         runtime.close()
+
+
+def test_fresh_postmortem_targets_current_baseline_without_rebinding_history(migrated_postgres_dsn):
+    from investment_panel.infrastructure.postgres.strategy_learning import StrategyLearningRepository
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE authority_group = 'options-radar-core' AND status = 'active'")
+            old = connection.execute("""INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, authority_group, implementation_id, implementation_version)
+                VALUES ('options-radar-core', 999, 'historical', 'superseded', %s, 'options-radar-core', 'unavailable', '1') RETURNING id""",
+                [Jsonb({'gates': {'min_dte': 14}})]).fetchone()['id']
+            active = connection.execute("""INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, supersedes_id, authority_group, implementation_id, implementation_version, promoted_at)
+                VALUES ('options-radar-core', 1000, 'current', 'active', %s, %s, 'options-radar-core', 'options_radar', 'option-professional-v3-ticket', now()) RETURNING id""",
+                [Jsonb({'gates': {'min_dte': 14}}), old]).fetchone()['id']
+            instrument = connection.execute("INSERT INTO catalog.instrument (symbol, asset_class) VALUES ('PM-BASELINE', 'equity') RETURNING id").fetchone()['id']
+            run = connection.execute("INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash, started_at, status) VALUES ('test', now(), 'test', %s, now(), 'succeeded') RETURNING id", ['c' * 64]).fetchone()['id']
+            decision = connection.execute("INSERT INTO analysis.decision (run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) VALUES (%s, %s, 'old-baseline', 'option', 'WATCH', now(), %s, %s) RETURNING id", [run, instrument, 'd' * 64, old]).fetchone()['id']
+        request = AgentRepository(runtime).queue_postmortem(decision, reason='current-baseline recovery')
+        assert request['context']['strategy']['id'] == old
+        assert request['context']['proposal_base']['id'] == active
+        counts = StrategyLearningRepository(runtime).materialize_postmortem(request['request_id'], {'proposed_parameter_changes': {'min_dte': 30}})
+        assert counts['strategy_proposals'] == 1
+        with runtime.read() as connection:
+            candidate = connection.execute("SELECT * FROM analysis.strategy_revision WHERE supersedes_id = %s AND status = 'candidate'", [active]).fetchone()
+            assert candidate['implementation_id'] == 'options_radar'
+            assert candidate['implementation_version'] == 'option-professional-v3-ticket'
+            assert connection.execute('SELECT strategy_revision_id FROM analysis.decision WHERE id = %s', [decision]).fetchone()['strategy_revision_id'] == old
+            assert connection.execute('SELECT implementation_id FROM analysis.strategy_revision WHERE id = %s', [old]).fetchone()['implementation_id'] == 'unavailable'
+            proposal = connection.execute("SELECT result FROM analysis.agent_task WHERE task_kind = 'strategy_mutation_proposal'").fetchone()['result']
+            assert proposal['source_strategy_revision_id'] == old
+            assert proposal['proposal_base_revision_id'] == active
+            assert proposal['status'] != 'promoted'
+        # A queued review cannot be silently retargeted after its parent changes.
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.agent_task SET status = 'completed' WHERE id = %s", [request['request_id']])
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [active])
+            task = connection.execute("INSERT INTO analysis.agent_task (task_kind, status, decision_id, request) VALUES ('option_postmortem', 'completed', %s, %s) RETURNING id", [decision, Jsonb(request)]).fetchone()['id']
+        import pytest
+        with pytest.raises(ValueError, match='proposal baseline is no longer active'):
+            StrategyLearningRepository(runtime).materialize_postmortem(str(task), {'proposed_parameter_changes': {'min_dte': 40}})
+    finally:
+        runtime.close()

@@ -16,6 +16,7 @@ from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.monitored_universe import monitored_universe
 from investment_panel.infrastructure.postgres.symbol_trends import refresh_symbol_trend_features
 from investment_panel.infrastructure.providers.assessment_quotes import fetch_assessment_quote
+from investment_panel.workflows.daily_dependencies import refresh_dependencies
 
 
 def collect(config_path: str | None = None) -> dict[str, Any]:
@@ -55,8 +56,11 @@ def collect(config_path: str | None = None) -> dict[str, Any]:
                          "assessment_only": True, "providers": sorted({row["provider"] for row in quotes})})
             stored += count
             errors.update(local_errors)
-    return {"status": "failed" if errors and not stored else "partial" if errors else "ok",
-            "requested": len(universe), "stored": stored, "errors": errors, "assessment_only": True}
+    dependencies = refresh_dependencies(runtime, config, [row for row in universe if row["asset_class"] == "crypto"])
+    return {"status": "failed" if errors and not stored else "partial" if errors or dependencies["status"] != "ok" else "ok",
+            "requested": len(universe), "stored": stored, "errors": errors, "assessment_only": True,
+            "completed_crypto_bars": dependencies,
+            **({"retry_after_seconds": 60} if dependencies["status"] != "ok" else {})}
 
 
 def features(config_path: str | None = None) -> dict[str, Any]:

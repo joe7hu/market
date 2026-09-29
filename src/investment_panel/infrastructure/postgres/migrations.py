@@ -11,8 +11,9 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
-HEAD_REVISION = "20260928_0044"
+HEAD_REVISION = "20260928_0045"
 _SUPPORTED_UPGRADE_REVISIONS = frozenset({
+    "20260928_0044",
     "20260928_0043",
     "20260927_0042",
     "20260927_0041",

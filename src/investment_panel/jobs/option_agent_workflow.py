@@ -118,6 +118,10 @@ def postmortem_system_prompt() -> str:
     return (
         "You write structured options-radar postmortems only. "
         "Use the supplied outcome, attribution, candidate, and thesis context. "
+        "When proposal_base is present, propose changes only against its supplied parameters; "
+        "strategy describes the historical decision and may use obsolete code. "
+        "Old outcomes are motivation, not performance evidence for the new baseline. "
+        "Return no parameter changes when there is no evidence-backed improvement. "
         "You may propose rule or parameter changes, but deterministic code decides "
         "backtests, forward tests, and paper-only promotion. Propose only the numeric "
         "gates in the output schema; use null for unchanged gates. Delta and spread "
